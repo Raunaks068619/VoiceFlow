@@ -5,6 +5,21 @@ VoiceFlow is a macOS menu-bar voice typing app inspired by Freeflow-style workfl
 - Release to transcribe
 - Insert text into the active app
 
+Menu option:
+<img width="299" height="323" alt="Screenshot 2026-02-26 at 4 22 21 PM" src="https://github.com/user-attachments/assets/ebc1b997-a68b-48a8-947c-ec3a7d0255bd" />
+Settings:
+<img width="471" height="522" alt="Screenshot 2026-02-26 at 4 22 34 PM" src="https://github.com/user-attachments/assets/b404a794-d1c3-42d9-a53b-af5d75ef8db9" />
+More Settings:
+<img width="472" height="524" alt="Screenshot 2026-02-26 at 4 22 40 PM" src="https://github.com/user-attachments/assets/d4e89312-a0c6-4f2b-a536-d4c1a18a1296" />
+Onboarding:
+<img width="521" height="450" alt="Screenshot 2026-02-26 at 4 22 58 PM" src="https://github.com/user-attachments/assets/b87bebd1-1d53-4f86-a7ca-bf342eeacdda" />
+
+Test Speech to text ENGLISH:
+<img width="764" height="756" alt="Screenshot 2026-02-26 at 4 29 26 PM" src="https://github.com/user-attachments/assets/41bb65bd-d3f4-45d5-9410-030d93679b4b" />
+Tets Speech to text Hindi+English
+<img width="700" height="737" alt="Screenshot 2026-02-26 at 4 29 38 PM" src="https://github.com/user-attachments/assets/9da697fd-1575-49cc-b339-2396dfd0c1f4" />
+
+
 It supports:
 - Global hotkeys (`Fn` and fallback `Right Option`)
 - OpenAI speech transcription
