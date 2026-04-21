@@ -10,6 +10,21 @@ class AudioRecorder: NSObject {
     private var noiseGateThreshold: Float = 0.015
     private var firstVoicedIndex: Int?
     private var lastVoicedIndex: Int?
+
+    // MARK: - Realtime streaming hook
+    //
+    // Optional callback fired for every input buffer, carrying 16-bit PCM
+    // mono audio resampled to 24 kHz — the format OpenAI's Realtime API
+    // expects. When set, we convert each incoming buffer and pass it along
+    // in parallel with our existing batch collection. The batch path stays
+    // untouched, so if streaming fails the caller can still fall back to
+    // the full WAV produced by `stopRecording`.
+    //
+    // We cache the AVAudioConverter because each init-allocates internal
+    // buffers; creating one per tap callback halves throughput.
+    var onPCM16Samples: ((Data) -> Void)?
+    private var pcm16Converter: AVAudioConverter?
+    private var pcm16OutputFormat: AVAudioFormat?
     // ~21ms per 1024-frame buffer at 48kHz. Keep ~500ms tail so trailing
     // consonants and soft endings ('huh', 'hai') don't get clipped.
     private let trailingPaddingBufferCount = 24
@@ -36,6 +51,10 @@ class AudioRecorder: NSObject {
         firstVoicedIndex = nil
         lastVoicedIndex = nil
         noiseGateThreshold = max(0.001, min(0.08, UserDefaults.standard.float(forKey: "noise_gate_threshold")))
+        // Reset converter — input format can change between sessions if
+        // user switches mic (different sample rate / channel count).
+        pcm16Converter = nil
+        pcm16OutputFormat = nil
 
         let format = inputNode?.outputFormat(forBus: 0)
 
@@ -67,6 +86,14 @@ class AudioRecorder: NSObject {
             if rms >= self.noiseGateThreshold {
                 if self.firstVoicedIndex == nil { self.firstVoicedIndex = index }
                 self.lastVoicedIndex = index
+            }
+            // Additive: if streaming is enabled, also emit PCM16 @ 24kHz.
+            // Failure here is silent — streaming is best-effort on top of
+            // the batch pipeline, not a replacement.
+            if self.onPCM16Samples != nil {
+                if let pcm16 = self.convertToPCM16At24kHz(buffer: copiedBuffer) {
+                    self.onPCM16Samples?(pcm16)
+                }
             }
         }
 
@@ -215,6 +242,56 @@ class AudioRecorder: NSObject {
         }
 
         return sqrt(sum / Float(channelCount))
+    }
+
+    /// Convert an input buffer (whatever the mic delivered — typically
+    /// 48 kHz stereo float32) to 16-bit PCM mono at 24 kHz, the format
+    /// OpenAI's Realtime API accepts. Returns raw PCM16 bytes, little-endian,
+    /// no WAV header — exactly what goes over the WebSocket.
+    ///
+    /// The converter is lazily created and cached across buffers; changing
+    /// input format (e.g. mic swap) invalidates it in `startRecording`.
+    private func convertToPCM16At24kHz(buffer: AVAudioPCMBuffer) -> Data? {
+        let outFormat = pcm16OutputFormat ?? AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 24_000,
+            channels: 1,
+            interleaved: true
+        )
+        guard let outFormat else { return nil }
+        pcm16OutputFormat = outFormat
+
+        let converter = pcm16Converter ?? AVAudioConverter(from: buffer.format, to: outFormat)
+        guard let converter else { return nil }
+        pcm16Converter = converter
+
+        // Output capacity: scale by sample-rate ratio + slop for resampler
+        // delay. 2x is plenty for any downmix we'd hit in practice.
+        let ratio = outFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
+            return nil
+        }
+
+        var inputConsumed = false
+        var error: NSError?
+        let status = converter.convert(to: outBuffer, error: &error) { _, inputStatus in
+            if inputConsumed {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            inputConsumed = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+
+        guard status != .error, error == nil, outBuffer.frameLength > 0 else {
+            return nil
+        }
+
+        let byteCount = Int(outBuffer.frameLength) * Int(outFormat.streamDescription.pointee.mBytesPerFrame)
+        guard let int16Data = outBuffer.int16ChannelData?[0] else { return nil }
+        return Data(bytes: int16Data, count: byteCount)
     }
 
     private func copyBuffer(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

@@ -318,6 +318,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var audioRecorder: AudioRecorder?
     var whisperService: WhisperService?
     var textInjector: TextInjector?
+
+    /// Per-recording streaming session. Lives only while Fn is held.
+    /// Created in startRecording (when the feature flag is on) and torn
+    /// down in stopRecording regardless of success path. We always keep
+    /// a reference to the batch audio too — if streaming errors out,
+    /// we can still upload the WAV and recover.
+    private var realtimeStream: RealtimeTranscriptionService?
+    private var realtimeStreamStart: CFAbsoluteTime = 0
+    private var realtimeStreamFailed: Bool = false
     var hotKeyListener: HotKeyListener?
     var permissionService = PermissionService.shared
     let recordingState = RecordingStateStore()
@@ -590,6 +599,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.showRecordingOverlay()
+            // Spin up realtime streaming BEFORE starting the tap so the
+            // PCM16 callback is already set. If the flag is off, skip
+            // entirely — we don't want to pay WebSocket connect cost for
+            // users who haven't opted in.
+            self.setupRealtimeStreamIfEnabled()
             let didStart = self.audioRecorder?.startRecording() ?? false
             if didStart {
                 self.permissionService.markMicrophoneOperational()
@@ -652,12 +666,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 // and let the polish LLM do the translation.
                 let transcriptionLanguage = (effectiveStyle == .translateEnglish && language == "en") ? "auto" : language
 
-                self.whisperService?.transcribeAndPolishWithMetadata(
-                    audioData: audioData,
-                    language: transcriptionLanguage,
-                    style: effectiveStyle,
-                    processingMode: processingMode
-                ) { [weak self] result in
+                // Streaming path: if we started a stream session and it's still
+                // alive, commit and await the final transcript. On any failure
+                // we silently fall through to the batch path with the WAV we
+                // already captured — user never sees a broken dictation because
+                // of a dropped WebSocket.
+                let handleResult: (Result<TranscriptionMetadata, Error>) -> Void = { [weak self] result in
                     DispatchQueue.main.async {
                         self?.hideRecordingOverlay()
                         switch result {
@@ -699,6 +713,108 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         }
                     }
                 }
+
+                // Decide which pipeline produces the transcript.
+                if let stream = self.realtimeStream, !self.realtimeStreamFailed {
+                    let streamStart = self.realtimeStreamStart
+                    Task { @MainActor in
+                        do {
+                            let finalText = try await stream.commitAndAwaitFinal()
+                            let streamLatency = Int((CFAbsoluteTimeGetCurrent() - streamStart) * 1000)
+                            stream.close()
+                            self.realtimeStream = nil
+                            self.whisperService?.polishOnlyWithMetadata(
+                                rawTranscript: finalText,
+                                providerLabel: "openai/gpt-4o-mini-transcribe/realtime",
+                                transcriptionLatencyMs: streamLatency,
+                                style: effectiveStyle,
+                                processingMode: processingMode,
+                                completion: handleResult
+                            )
+                        } catch {
+                            // Streaming failed — drop the socket and recover
+                            // via the batch path using the WAV we already have.
+                            print("Realtime stream failed, falling back to batch: \(error)")
+                            stream.close()
+                            self.realtimeStream = nil
+                            self.realtimeStreamFailed = true
+                            self.whisperService?.transcribeAndPolishWithMetadata(
+                                audioData: audioData,
+                                language: transcriptionLanguage,
+                                style: effectiveStyle,
+                                processingMode: processingMode,
+                                completion: handleResult
+                            )
+                        }
+                    }
+                } else {
+                    self.whisperService?.transcribeAndPolishWithMetadata(
+                        audioData: audioData,
+                        language: transcriptionLanguage,
+                        style: effectiveStyle,
+                        processingMode: processingMode,
+                        completion: handleResult
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Realtime streaming wiring
+
+    /// Feature flag lives in UserDefaults so users can toggle from Settings.
+    /// Default OFF — streaming is additive, not a replacement, until we've
+    /// proven the latency win and error rate on real recordings.
+    static let realtimeStreamingKey = "realtime_streaming_enabled"
+
+    private func setupRealtimeStreamIfEnabled() {
+        // Clear old state regardless of flag, so a previous failure doesn't
+        // poison the next session.
+        realtimeStream?.close()
+        realtimeStream = nil
+        realtimeStreamFailed = false
+        audioRecorder?.onPCM16Samples = nil
+
+        guard UserDefaults.standard.bool(forKey: Self.realtimeStreamingKey) else { return }
+
+        // Streaming only makes sense with OpenAI — Groq's Realtime endpoint
+        // has a different shape and we don't support it yet. Silently skip
+        // for other providers; batch path will handle the recording fine.
+        guard TranscriptionProvider.current == .openai else { return }
+
+        let apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
+        guard !apiKey.isEmpty else { return }
+
+        let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
+        let config = RealtimeTranscriptionService.Configuration.openAI(
+            apiKey: apiKey,
+            language: language == "auto" ? "" : language
+        )
+        let stream = RealtimeTranscriptionService(config: config)
+        realtimeStream = stream
+        realtimeStreamStart = CFAbsoluteTimeGetCurrent()
+
+        // Wire the PCM16 pump. We buffer chunks while the socket is still
+        // connecting; once connect completes, the audio already in-flight
+        // will have been dropped. For now we accept that first ~100-200ms
+        // loss — the WAV fallback still has everything if it matters.
+        audioRecorder?.onPCM16Samples = { [weak stream] data in
+            Task { @MainActor [weak stream] in
+                stream?.appendPCM16(data)
+            }
+        }
+
+        stream.onError = { [weak self] error in
+            print("Realtime stream error during capture: \(error.localizedDescription)")
+            self?.realtimeStreamFailed = true
+        }
+
+        Task { @MainActor [weak stream] in
+            do {
+                try await stream?.connect()
+            } catch {
+                print("Realtime stream connect failed: \(error.localizedDescription)")
+                self.realtimeStreamFailed = true
             }
         }
     }

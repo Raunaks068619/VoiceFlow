@@ -24,6 +24,9 @@
 		CC11111111111111CCCCCCCC /* RunRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC22222222222222CCCCCCCC /* RunRecorder.swift */; };
 		DD11111111111111DDDDDDDD /* RunLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD22222222222222DDDDDDDD /* RunLogView.swift */; };
 		FF11111111111111FFFFFFFF /* LocalModelDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF22222222222222FFFFFFFF /* LocalModelDetector.swift */; };
+		EE44444444444444EEEEEEEE /* RealtimeTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */; };
+		FF44444444444444FFFFFFFF /* GitHubService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF55555555555555FFFFFFFF /* GitHubService.swift */; };
+		AA44444444444444AABBAABB /* StarRepoCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA55555555555555AABBAABB /* StarRepoCard.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +50,9 @@
 		CC22222222222222CCCCCCCC /* RunRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunRecorder.swift; sourceTree = "<group>"; };
 		DD22222222222222DDDDDDDD /* RunLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunLogView.swift; sourceTree = "<group>"; };
 		FF22222222222222FFFFFFFF /* LocalModelDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelDetector.swift; sourceTree = "<group>"; };
+		EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeTranscriptionService.swift; sourceTree = "<group>"; };
+		FF55555555555555FFFFFFFF /* GitHubService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubService.swift; sourceTree = "<group>"; };
+		AA55555555555555AABBAABB /* StarRepoCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarRepoCard.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -71,8 +77,10 @@
 			isa = PBXGroup;
 			children = (
 				FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */,
+				FF55555555555555FFFFFFFF /* GitHubService.swift */,
 				FC498E736D1087FB9B14187C /* HotKeyListener.swift */,
 				FF22222222222222FFFFFFFF /* LocalModelDetector.swift */,
+				EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */,
 				CC22222222222222CCCCCCCC /* RunRecorder.swift */,
 				BB22222222222222BBBBBBBB /* RunStore.swift */,
 				16A5AE6AF5A3ECD86B1C2456 /* TextInjector.swift */,
@@ -81,9 +89,18 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		AA66666666666666AABBAABB /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				AA55555555555555AABBAABB /* StarRepoCard.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
 		8DE66CA823AE270661C51931 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				AA66666666666666AABBAABB /* Components */,
 				FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */,
 				545269499F1DC1CA34A9BCD1 /* InputMonitoringGuideView.swift */,
 				C52A4B39FDE4068BB6AF34AD /* MainDashboardView.swift */,
@@ -213,6 +230,9 @@
 				CC11111111111111CCCCCCCC /* RunRecorder.swift in Sources */,
 				DD11111111111111DDDDDDDD /* RunLogView.swift in Sources */,
 				FF11111111111111FFFFFFFF /* LocalModelDetector.swift in Sources */,
+				EE44444444444444EEEEEEEE /* RealtimeTranscriptionService.swift in Sources */,
+				FF44444444444444FFFFFFFF /* GitHubService.swift in Sources */,
+				AA44444444444444AABBAABB /* StarRepoCard.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

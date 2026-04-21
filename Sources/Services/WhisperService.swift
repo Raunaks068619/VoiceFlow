@@ -316,6 +316,60 @@ class WhisperService {
         }
     }
 
+    /// Streaming-friendly entry point: caller already has a transcript (from
+    /// the Realtime API) and just needs the post-processing pipeline.
+    /// Shapes the same `TranscriptionMetadata` so RunLog rows look identical
+    /// whether the transcript came from batch or stream.
+    ///
+    /// `providerLabel` lets the caller identify the origin (e.g.
+    /// "openai/gpt-4o-mini-transcribe/realtime") so we can slice latency by
+    /// path in the Run Log.
+    func polishOnlyWithMetadata(
+        rawTranscript: String,
+        providerLabel: String,
+        transcriptionLatencyMs: Int,
+        style: TranscriptOutputStyle,
+        processingMode: TranscriptProcessingMode,
+        completion: @escaping (Result<TranscriptionMetadata, Error>) -> Void
+    ) {
+        let postStart = CFAbsoluteTimeGetCurrent()
+        self.postProcessWithPrompt(text: rawTranscript, style: style, processingMode: processingMode) { postResult in
+            let postLatency = Int((CFAbsoluteTimeGetCurrent() - postStart) * 1000)
+            switch postResult {
+            case .success(let (finalText, prompt, guardTriggered)):
+                let metadata = TranscriptionMetadata(
+                    provider: providerLabel,
+                    rawText: rawTranscript,
+                    transcriptionLatencyMs: transcriptionLatencyMs,
+                    postProcessMode: processingMode.rawValue,
+                    postProcessStyle: style.rawValue,
+                    postProcessModel: style == .verbatim ? nil : PolishBackend.current.displayLabel,
+                    postProcessPrompt: prompt,
+                    finalText: finalText,
+                    postProcessLatencyMs: postLatency,
+                    languageGuardTriggered: guardTriggered
+                )
+                completion(.success(metadata))
+            case .failure(let error):
+                // Same graceful fallback shape as the batch path.
+                print("Post-processing failed (streaming), using raw transcript: \(error)")
+                let metadata = TranscriptionMetadata(
+                    provider: providerLabel,
+                    rawText: rawTranscript,
+                    transcriptionLatencyMs: transcriptionLatencyMs,
+                    postProcessMode: processingMode.rawValue,
+                    postProcessStyle: style.rawValue,
+                    postProcessModel: nil,
+                    postProcessPrompt: nil,
+                    finalText: rawTranscript,
+                    postProcessLatencyMs: postLatency,
+                    languageGuardTriggered: false
+                )
+                completion(.success(metadata))
+            }
+        }
+    }
+
     func transcribe(audioData: Data, language: String = "hi", completion: @escaping (Result<String, Error>) -> Void) {
         let provider = TranscriptionProvider.current
 

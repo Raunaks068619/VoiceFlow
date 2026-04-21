@@ -69,6 +69,11 @@ struct MainDashboardView: View {
 
     // Settings tab
     @State private var provider: String = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.openai.rawValue
+
+    // Realtime streaming: off by default. When on, we pipe PCM16 @ 24 kHz
+    // directly into OpenAI's Realtime API for lower perceived latency on
+    // long dictations. Batch path remains the safety net.
+    @State private var realtimeStreaming: Bool = UserDefaults.standard.bool(forKey: "realtime_streaming_enabled")
     @State private var openAIKey: String = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
     @State private var groqKey: String = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
     @State private var polishBackendId: String = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey) ?? PolishBackend.defaultId
@@ -175,6 +180,7 @@ struct MainDashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 recordingHeader
+                StarRepoCard()
                 aboutCard
                 languageCard
                 transcriptionModeCard
@@ -370,6 +376,7 @@ struct MainDashboardView: View {
             VStack(alignment: .leading, spacing: 20) {
                 settingsHeader
                 providerCard
+                realtimeStreamingCard
                 polishModelCard
                 outputStyleCard
                 footerActions
@@ -392,6 +399,43 @@ struct MainDashboardView: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
+        }
+    }
+
+    private var realtimeStreamingCard: some View {
+        cardContainer {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Realtime Streaming")
+                                .font(.headline)
+                            Text("BETA")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.orange))
+                        }
+                        Text("Lower perceived latency by streaming audio to OpenAI while you speak.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $realtimeStreaming)
+                        .labelsHidden()
+                        .onChange(of: realtimeStreaming) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "realtime_streaming_enabled")
+                        }
+                }
+                if realtimeStreaming {
+                    Text("Requires OpenAI provider and a valid API key. Falls back to the batch upload if the WebSocket drops — you'll never miss a recording because of a bad network.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
