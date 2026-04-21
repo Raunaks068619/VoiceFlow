@@ -20,6 +20,8 @@ Package.resolved
 
 # Secrets (defensive)
 .env
+.env.*
+!.env.*.example
 secrets.swift
 *.pem
 *.key
