@@ -1,16 +1,15 @@
 import SwiftUI
 
+/// Menu bar dropdown content, rendered inside SwiftUI's `MenuBarExtra`.
+///
+/// Observes `AppDelegate` via `@EnvironmentObject` — all state updates
+/// (recording, permissions, hotkey status) are reflected automatically
+/// through `@Published` properties. No manual refresh needed.
 struct MenuBarView: View {
-    var isRecording: Bool
-    var onStartRecording: () -> Void
-    var onStopRecording: () -> Void
-    var onSettings: () -> Void
-    var onOnboarding: () -> Void
-    var onQuit: () -> Void
-    
+    @EnvironmentObject var appDelegate: AppDelegate
+
     var body: some View {
         VStack(spacing: 12) {
-            // Header
             HStack {
                 Image(systemName: "waveform.circle.fill")
                     .font(.title2)
@@ -19,55 +18,55 @@ struct MenuBarView: View {
                     .font(.headline)
                 Spacer()
             }
-            
+
             Divider()
-            
-            // Instructions
+
             VStack(alignment: .leading, spacing: 8) {
-                Label("Hold Fn or Right Option to record", systemImage: "keyboard")
+                Label("Hold Fn to record", systemImage: "keyboard")
                     .font(.subheadline)
-                Label("Or use test button below", systemImage: "slider.horizontal.3")
+                Label("Release to transcribe", systemImage: "text.bubble")
                     .font(.subheadline)
             }
-            
-            Divider()
-            
-            // Press-and-hold test recording
-            Button(action: {}) {
-                Text(isRecording ? "Release to Stop" : "Hold to Test Record")
+
+            if !appDelegate.permissionWarning.isEmpty {
+                Text(appDelegate.permissionWarning)
+                    .font(.caption)
+                    .foregroundColor(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
-            .foregroundColor(isRecording ? .red : .accentColor)
-            .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
-                if pressing {
-                    onStartRecording()
-                } else {
-                    onStopRecording()
-                }
-            }, perform: {})
 
             Divider()
+
+            Button(appDelegate.isRecording ? "Stop Recording" : "Test Record") {
+                if appDelegate.isRecording {
+                    appDelegate.isRecording = false
+                    appDelegate.stopRecording()
+                } else {
+                    appDelegate.isRecording = true
+                    appDelegate.startRecording()
+                }
+            }
+            .keyboardShortcut("r")
+
+            Divider()
+
+            Button("Open VoiceFlow") {
+                appDelegate.openMainWindow()
+            }
+            .keyboardShortcut("o")
 
             Button("Settings...") {
-                onSettings()
+                appDelegate.openSettings()
             }
-            .buttonStyle(.plain)
-            .foregroundColor(.accentColor)
+            .keyboardShortcut(",")
 
-            Button("Onboarding...") {
-                onOnboarding()
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(.accentColor)
-            
             Divider()
-            
+
             Button("Quit VoiceFlow") {
-                onQuit()
+                appDelegate.allowTermination = true
+                NSApplication.shared.terminate(nil)
             }
-            .buttonStyle(.plain)
-            .foregroundColor(.red)
+            .keyboardShortcut("q")
         }
         .padding()
         .frame(width: 250)

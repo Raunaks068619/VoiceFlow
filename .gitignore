@@ -1,0 +1,30 @@
+# Build output
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift
+Package.resolved
+.swiftpm/
+
+# Binaries & installers
+*.app
+*.dmg
+*.zip
+
+# Secrets (defensive)
+.env
+secrets.swift
+*.pem
+*.key
+
+# Temporary outputs  
+tmp/
+staging/
+voiceflow_dmg_staging/

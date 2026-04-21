@@ -4,83 +4,113 @@ import AVFoundation
 class AudioRecorder: NSObject {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
-    private var gatedAudioBuffer: [AVAudioPCMBuffer] = []
     private var rawAudioBuffer: [AVAudioPCMBuffer] = []
     private var isRecording = false
     private var recordingCallback: ((Data?) -> Void)?
     private var noiseGateThreshold: Float = 0.015
-    private var voicedBufferCount = 0
-    private var hangoverBuffersRemaining = 0
-    private let hangoverBufferCount = 6
-    
+    private var firstVoicedIndex: Int?
+    private var lastVoicedIndex: Int?
+    // ~21ms per 1024-frame buffer at 48kHz. Keep ~500ms tail so trailing
+    // consonants and soft endings ('huh', 'hai') don't get clipped.
+    private let trailingPaddingBufferCount = 24
+    // Keep ~200ms of lead-in before the first detected voice activity. This
+    // captures the onset ramp of the first word — the phoneme attack is
+    // almost always below steady-state RMS for 20-80ms, and clipping it
+    // makes Whisper mis-hear or drop the word entirely.
+    private let leadingPaddingBufferCount = 10
+
     override init() {
         super.init()
         setupAudioEngine()
     }
-    
+
     private func setupAudioEngine() {
         audioEngine = AVAudioEngine()
         inputNode = audioEngine?.inputNode
     }
-    
-    func startRecording() {
-        guard let audioEngine = audioEngine, !isRecording else { return }
-        
-        gatedAudioBuffer.removeAll()
+
+    func startRecording() -> Bool {
+        guard let audioEngine = audioEngine, !isRecording else { return false }
+
         rawAudioBuffer.removeAll()
-        voicedBufferCount = 0
-        hangoverBuffersRemaining = 0
+        firstVoicedIndex = nil
+        lastVoicedIndex = nil
         noiseGateThreshold = max(0.001, min(0.08, UserDefaults.standard.float(forKey: "noise_gate_threshold")))
-        
+
         let format = inputNode?.outputFormat(forBus: 0)
-        
+
+        // Remove any leftover tap from a previous failed start before installing a new one.
+        inputNode?.removeTap(onBus: 0)
+
+        // Capture ALL audio into rawAudioBuffer and remember which buffers had
+        // voice activity. Previously we ran a real-time noise gate that dropped
+        // sub-threshold buffers entirely; that caused two failure modes:
+        //
+        // 1. Long pauses mid-recording → the gate ran out of hangover and
+        //    started dropping. When the user resumed speaking, the onset ramp
+        //    of the first post-pause word was often below threshold, so its
+        //    leading phoneme was cut. Whisper then mis-heard or dropped the
+        //    word entirely.
+        // 2. Gated concatenation removed all internal silences, which broke
+        //    Whisper's internal VAD-based segmentation.
+        //
+        // New approach: keep every buffer verbatim. On stop, trim only the
+        // *leading and trailing* silence using the voiced-index markers, with
+        // generous padding on both sides. This preserves mid-recording pauses
+        // (which are semantically meaningful) while still shaving bandwidth.
         inputNode?.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
             guard let copiedBuffer = self.copyBuffer(buffer) else { return }
+            let index = self.rawAudioBuffer.count
             self.rawAudioBuffer.append(copiedBuffer)
             let rms = self.calculateRMS(buffer: copiedBuffer)
             if rms >= self.noiseGateThreshold {
-                self.gatedAudioBuffer.append(copiedBuffer)
-                self.voicedBufferCount += 1
-                self.hangoverBuffersRemaining = self.hangoverBufferCount
-            } else if self.hangoverBuffersRemaining > 0 {
-                self.gatedAudioBuffer.append(copiedBuffer)
-                self.hangoverBuffersRemaining -= 1
+                if self.firstVoicedIndex == nil { self.firstVoicedIndex = index }
+                self.lastVoicedIndex = index
             }
         }
-        
+
         do {
             try audioEngine.start()
             isRecording = true
             print("Recording started")
+            return true
         } catch {
+            inputNode?.removeTap(onBus: 0)
             print("Failed to start audio engine: \(error)")
+            return false
         }
     }
-    
+
     func stopRecording(completion: @escaping (Data?) -> Void) {
         guard isRecording else {
             completion(nil)
             return
         }
-        
+
         inputNode?.removeTap(onBus: 0)
         audioEngine?.stop()
         isRecording = false
-        
+
         let selectedBuffers: [AVAudioPCMBuffer]
-        if voicedBufferCount > 0 {
-            selectedBuffers = gatedAudioBuffer
+        if let first = firstVoicedIndex, let last = lastVoicedIndex {
+            // Trim leading/trailing silence with padding on both sides. Interior
+            // silence is preserved — a 3-second pause mid-sentence stays a
+            // 3-second pause, so Whisper can segment properly.
+            let start = max(0, first - leadingPaddingBufferCount)
+            let end = min(rawAudioBuffer.count - 1, last + trailingPaddingBufferCount)
+            selectedBuffers = Array(rawAudioBuffer[start...end])
+            print("Recording stopped (voiced range \(first)...\(last) of \(rawAudioBuffer.count), trimmed to \(start)...\(end))")
         } else {
+            // No voice activity detected at all — user probably tapped Fn by
+            // mistake. Send the raw audio anyway; Whisper will return empty
+            // and the empty-guard in WhisperService will drop it quietly.
             selectedBuffers = rawAudioBuffer
-            print("Recording stopped (noise gate too strict, using raw audio fallback)")
+            print("Recording stopped (no voice detected, sending raw audio)")
         }
 
-        // Convert buffers to WAV data
         let audioData = convertBuffersToWAV(from: selectedBuffers)
         completion(audioData)
-        
-        print("Recording stopped")
     }
     
     private func convertBuffersToWAV(from buffers: [AVAudioPCMBuffer]) -> Data? {

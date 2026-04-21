@@ -9,12 +9,21 @@
 /* Begin PBXBuildFile section */
 		057F678B908D87E1DE831FA4 /* RecordingOverlayWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39F5D0D1AE26FA25F5A3906F /* RecordingOverlayWindow.swift */; };
 		1729D8D1CE63C3934D599A43 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A3515D754AEB9E26CCA68F /* SettingsView.swift */; };
+		17436F390943ED0428A98647 /* MainDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C52A4B39FDE4068BB6AF34AD /* MainDashboardView.swift */; };
 		318B02FCADB0B89565436A9F /* VoiceFlowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16049E136D576F6E7155DDD9 /* VoiceFlowApp.swift */; };
+		619D328DA903D3B09774C2F6 /* VoiceFlow.icns in Resources */ = {isa = PBXBuildFile; fileRef = D3F11FF4D85D34524197D0F4 /* VoiceFlow.icns */; };
+		633CC693C9CD54CED45703D9 /* InputMonitoringGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 545269499F1DC1CA34A9BCD1 /* InputMonitoringGuideView.swift */; };
 		7088ECD0D9DCA737B074E534 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 707DE76A41F81D64547A4653 /* MenuBarView.swift */; };
 		7ACB7F9379F4F1031DB656D2 /* TextInjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A5AE6AF5A3ECD86B1C2456 /* TextInjector.swift */; };
+		918CF1AE234D31C81C252F24 /* AccessibilityGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */; };
 		91D809860763228986368378 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */; };
 		BEBE0CCADE58598FF0253E84 /* HotKeyListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC498E736D1087FB9B14187C /* HotKeyListener.swift */; };
 		D499A668C340F1138155A93B /* WhisperService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87966BCEB2D8E8154D5CAA5A /* WhisperService.swift */; };
+		AA11111111111111AAAAAAAA /* RunModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA22222222222222AAAAAAAA /* RunModel.swift */; };
+		BB11111111111111BBBBBBBB /* RunStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22222222222222BBBBBBBB /* RunStore.swift */; };
+		CC11111111111111CCCCCCCC /* RunRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC22222222222222CCCCCCCC /* RunRecorder.swift */; };
+		DD11111111111111DDDDDDDD /* RunLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD22222222222222DDDDDDDD /* RunLogView.swift */; };
+		FF11111111111111FFFFFFFF /* LocalModelDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF22222222222222FFFFFFFF /* LocalModelDetector.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,13 +31,22 @@
 		16A5AE6AF5A3ECD86B1C2456 /* TextInjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInjector.swift; sourceTree = "<group>"; };
 		39F5D0D1AE26FA25F5A3906F /* RecordingOverlayWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOverlayWindow.swift; sourceTree = "<group>"; };
 		40B268B6DBB1EDFFDB41F116 /* VoiceFlow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceFlow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		545269499F1DC1CA34A9BCD1 /* InputMonitoringGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMonitoringGuideView.swift; sourceTree = "<group>"; };
 		707DE76A41F81D64547A4653 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		87966BCEB2D8E8154D5CAA5A /* WhisperService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperService.swift; sourceTree = "<group>"; };
 		B33BF7E64BAAF219F092C06E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B9F20AD1290941D8B706EB76 /* VoiceFlow.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceFlow.entitlements; sourceTree = "<group>"; };
+		C52A4B39FDE4068BB6AF34AD /* MainDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainDashboardView.swift; sourceTree = "<group>"; };
+		D3F11FF4D85D34524197D0F4 /* VoiceFlow.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = VoiceFlow.icns; sourceTree = "<group>"; };
 		D9A3515D754AEB9E26CCA68F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		FC498E736D1087FB9B14187C /* HotKeyListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyListener.swift; sourceTree = "<group>"; };
+		FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityGuideView.swift; sourceTree = "<group>"; };
 		FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		AA22222222222222AAAAAAAA /* RunModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunModel.swift; sourceTree = "<group>"; };
+		BB22222222222222BBBBBBBB /* RunStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStore.swift; sourceTree = "<group>"; };
+		CC22222222222222CCCCCCCC /* RunRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunRecorder.swift; sourceTree = "<group>"; };
+		DD22222222222222DDDDDDDD /* RunLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunLogView.swift; sourceTree = "<group>"; };
+		FF22222222222222FFFFFFFF /* LocalModelDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelDetector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -54,6 +72,9 @@
 			children = (
 				FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */,
 				FC498E736D1087FB9B14187C /* HotKeyListener.swift */,
+				FF22222222222222FFFFFFFF /* LocalModelDetector.swift */,
+				CC22222222222222CCCCCCCC /* RunRecorder.swift */,
+				BB22222222222222BBBBBBBB /* RunStore.swift */,
 				16A5AE6AF5A3ECD86B1C2456 /* TextInjector.swift */,
 				87966BCEB2D8E8154D5CAA5A /* WhisperService.swift */,
 			);
@@ -63,18 +84,15 @@
 		8DE66CA823AE270661C51931 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */,
+				545269499F1DC1CA34A9BCD1 /* InputMonitoringGuideView.swift */,
+				C52A4B39FDE4068BB6AF34AD /* MainDashboardView.swift */,
 				707DE76A41F81D64547A4653 /* MenuBarView.swift */,
 				39F5D0D1AE26FA25F5A3906F /* RecordingOverlayWindow.swift */,
+				DD22222222222222DDDDDDDD /* RunLogView.swift */,
 				D9A3515D754AEB9E26CCA68F /* SettingsView.swift */,
 			);
 			path = Views;
-			sourceTree = "<group>";
-		};
-		B79F3C1CC84730C0E42DD6DC /* Models */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Models;
 			sourceTree = "<group>";
 		};
 		BFE34A5D7C1F0266DED62D68 /* Products */ = {
@@ -85,20 +103,20 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		D4A7E90D5EAAEB6C078456B4 /* Utils */ = {
+		EE33333333333333EEEEEEEE /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				AA22222222222222AAAAAAAA /* RunModel.swift */,
 			);
-			path = Utils;
+			path = Models;
 			sourceTree = "<group>";
 		};
 		D828AFF4ECC36763B8C48C58 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
 				16C40B5EB8A63F9366B529D9 /* App */,
-				B79F3C1CC84730C0E42DD6DC /* Models */,
+				EE33333333333333EEEEEEEE /* Models */,
 				7D04772BF39EE357A66E2449 /* Services */,
-				D4A7E90D5EAAEB6C078456B4 /* Utils */,
 				8DE66CA823AE270661C51931 /* Views */,
 			);
 			path = Sources;
@@ -109,6 +127,7 @@
 			children = (
 				B33BF7E64BAAF219F092C06E /* Info.plist */,
 				B9F20AD1290941D8B706EB76 /* VoiceFlow.entitlements */,
+				D3F11FF4D85D34524197D0F4 /* VoiceFlow.icns */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -121,6 +140,7 @@
 			buildConfigurationList = 2095DFC3F3B71050309A0D59 /* Build configuration list for PBXNativeTarget "VoiceFlow" */;
 			buildPhases = (
 				29E5751D9C8AB038011126E6 /* Sources */,
+				97E3564FFE93F803FC81B459 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -161,19 +181,38 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		97E3564FFE93F803FC81B459 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				619D328DA903D3B09774C2F6 /* VoiceFlow.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		29E5751D9C8AB038011126E6 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				918CF1AE234D31C81C252F24 /* AccessibilityGuideView.swift in Sources */,
 				91D809860763228986368378 /* AudioRecorder.swift in Sources */,
 				BEBE0CCADE58598FF0253E84 /* HotKeyListener.swift in Sources */,
+				633CC693C9CD54CED45703D9 /* InputMonitoringGuideView.swift in Sources */,
+				17436F390943ED0428A98647 /* MainDashboardView.swift in Sources */,
 				7088ECD0D9DCA737B074E534 /* MenuBarView.swift in Sources */,
 				057F678B908D87E1DE831FA4 /* RecordingOverlayWindow.swift in Sources */,
 				1729D8D1CE63C3934D599A43 /* SettingsView.swift in Sources */,
 				7ACB7F9379F4F1031DB656D2 /* TextInjector.swift in Sources */,
 				318B02FCADB0B89565436A9F /* VoiceFlowApp.swift in Sources */,
 				D499A668C340F1138155A93B /* WhisperService.swift in Sources */,
+				AA11111111111111AAAAAAAA /* RunModel.swift in Sources */,
+				BB11111111111111BBBBBBBB /* RunStore.swift in Sources */,
+				CC11111111111111CCCCCCCC /* RunRecorder.swift in Sources */,
+				DD11111111111111DDDDDDDD /* RunLogView.swift in Sources */,
+				FF11111111111111FFFFFFFF /* LocalModelDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

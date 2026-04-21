@@ -1,6 +1,14 @@
 import Foundation
 import AppKit
 import Carbon
+import ApplicationServices
+
+enum HotKeyStartResult: Equatable {
+    case started
+    case failedMissingAccessibility
+    case failedMissingInputMonitoring
+    case failedUnknown
+}
 
 class HotKeyListener {
     var onKeyDown: (() -> Void)?
@@ -14,8 +22,15 @@ class HotKeyListener {
     private let fnKeyCode: Int64 = 63
     private let rightOptionKeyCode: Int64 = 61
     
-    func start() {
+    func start() -> HotKeyStartResult {
         stop()
+        if !AXIsProcessTrusted() {
+            return .failedMissingAccessibility
+        }
+        if !CGPreflightListenEventAccess() {
+            return .failedMissingInputMonitoring
+        }
+
         let eventMask = (1 << CGEventType.flagsChanged.rawValue)
         
         guard let tap = CGEvent.tapCreate(
@@ -30,8 +45,7 @@ class HotKeyListener {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            print("ERROR: Failed to create CGEvent tap. Need Accessibility permission!")
-            return
+            return .failedUnknown
         }
         
         eventTap = tap
@@ -48,6 +62,7 @@ class HotKeyListener {
                 hasOptionFlag: event.modifierFlags.contains(.option)
             )
         }
+        return .started
     }
     
     func stop() {
@@ -87,28 +102,22 @@ class HotKeyListener {
     }
 
     private func handleFlagsChanged(keyCode: Int64, hasFnFlag: Bool, hasOptionFlag: Bool) {
-        if keyCode == rightOptionKeyCode {
-            setTriggerActive(hasOptionFlag, pressedLog: "Right Option pressed!", releasedLog: "Right Option released!")
-            return
-        }
-
+        // Fn is the ONLY trigger. Right Option previously acted as a fallback
+        // but caused accidental activation when users genuinely wanted Option
+        // as a modifier. If Fn doesn't register on a given keyboard, the fix
+        // is System Settings → Keyboard → Globe/Fn Key Usage, not a fallback.
         if keyCode == fnKeyCode {
-            if hasFnFlag {
-                setTriggerActive(true, pressedLog: "Fn pressed!", releasedLog: "Fn released!")
-                return
-            }
-
-            // Some keyboards expose Fn keycode without fn modifier flag; toggle as fallback.
-            let now = Date().timeIntervalSinceReferenceDate
-            if now - lastRawFnEventTime > 0.03 {
-                setTriggerActive(!isTriggerActive, pressedLog: "Fn pressed!", releasedLog: "Fn released!")
-            }
-            lastRawFnEventTime = now
+            // Always trust the fn flag. Press = flag ON, Release = flag OFF.
+            // Previous implementation toggled on "raw fn without flag" which caused
+            // stuck-recording bugs when the release event arrived without the flag.
+            setTriggerActive(hasFnFlag, pressedLog: "Fn pressed!", releasedLog: "Fn released!")
+            lastRawFnEventTime = Date().timeIntervalSinceReferenceDate
             return
         }
 
-        if hasFnFlag != isTriggerActive {
-            setTriggerActive(hasFnFlag, pressedLog: "Fn pressed!", releasedLog: "Fn released!")
+        // Any other flag change: if the fn modifier dropped, force-release.
+        if !hasFnFlag && isTriggerActive {
+            setTriggerActive(false, pressedLog: "Fn pressed!", releasedLog: "Fn released (flags cleared)!")
         }
     }
 
