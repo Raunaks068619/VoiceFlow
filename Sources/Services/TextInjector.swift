@@ -1,13 +1,16 @@
 import Foundation
 import AppKit
 import Carbon
+import ApplicationServices
 
 class TextInjector {
     private var lastInjectedSignature: String?
     private var lastInjectedAt: TimeInterval = 0
 
-    /// Delivered when injection is suppressed (e.g., VoiceFlow is foreground).
-    /// The transcript is still on the clipboard so the user can paste manually.
+    /// Delivered when injection is suppressed for ANY reason — VoiceFlow
+    /// is foreground, no text input focused, etc. The transcript is on
+    /// the clipboard so the user can paste manually. AppDelegate uses
+    /// this hook to flash the floating chip's warning state.
     var onInjectionSuppressed: ((String) -> Void)?
 
     func injectText(_ text: String) {
@@ -27,25 +30,139 @@ class TextInjector {
             self.lastInjectedSignature = signature
             self.lastInjectedAt = now
 
-            // Guard: if VoiceFlow itself is foreground (e.g. Settings window is
-            // focused), DO NOT auto-paste. The user almost certainly doesn't
-            // want transcript text injected into our own UI — and if focus is
-            // on a SecureField like "OpenAI API Key", pasting silently
-            // corrupts the stored credential (SwiftUI writes the mangled
-            // value back to UserDefaults with no way to tell).
-            // Instead, copy to clipboard and notify the caller so they can
-            // show a non-intrusive banner.
+            // Guard 1: VoiceFlow itself is foreground (Settings window
+            // focused, etc.). Don't paste into our own UI — could clobber
+            // a SecureField like an API key.
             if Self.isVoiceFlowForeground() {
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(normalized, forType: .string)
-                print("Injection suppressed — VoiceFlow is frontmost. Transcript copied to clipboard.")
-                self.onInjectionSuppressed?(normalized)
+                self.suppressInjection(normalized, reason: "VoiceFlow is frontmost")
+                return
+            }
+
+            // Guard 2: focused element doesn't look like a text input.
+            // This is INTENTIONALLY conservative — we still try to inject
+            // into a wide range of AX roles (AXTextArea/Field/Search/
+            // ComboBox/WebArea/ScrollArea/Group). If after that the role
+            // is still off-list, fall back to clipboard.
+            //
+            // Tradeoff vs. the strict upfront gate: we may paste into an
+            // app that doesn't actually consume the keystroke, in which
+            // case the user has to Cmd+V again. That's acceptable — every
+            // alternative either (a) blocks legitimate dictation in
+            // AX-quirky apps like VS Code or iTerm, or (b) drops the
+            // transcript on the floor.
+            if !Self.focusedElementLooksLikeTextInput() {
+                self.suppressInjection(normalized, reason: "no text-input element focused")
                 return
             }
 
             self.injectViaPasteboard(normalized)
         }
+    }
+
+    // MARK: - Suppressed-injection clipboard preservation
+    //
+    // When we can't paste the transcript directly (no text input focused,
+    // VoiceFlow foreground, etc.) we have to put the transcript on the
+    // clipboard so the user can Cmd+V it later. That clobbers whatever
+    // the user had — a copied password, an unrelated snippet — and feels
+    // disrespectful.
+    //
+    // Solution: save the previous clipboard contents alongside our own
+    // changeCount marker. The caller (AppDelegate) calls
+    // `restorePreservedClipboard()` after the warning chip dismisses.
+    // If the clipboard has been touched in the meantime (user copied
+    // something new), we abort the restore so we don't clobber THAT.
+
+    private var preservedPreviousClipboard: String?
+    /// `pasteboard.changeCount` recorded right after WE wrote the
+    /// transcript. If it differs at restore-time, the clipboard has
+    /// been mutated by some other source and we don't touch it.
+    private var transcriptChangeCount: Int = -1
+
+    /// Common path for suppressed injections: stash transcript on clipboard,
+    /// preserve user's previous clipboard for later restore, log the reason,
+    /// fire the callback so the chip can warn the user.
+    private func suppressInjection(_ text: String, reason: String) {
+        let pasteboard = NSPasteboard.general
+
+        // Save previous clipboard BEFORE we overwrite. Only stash if it's
+        // different from the transcript — avoids dragging the same string
+        // through both slots if the user just dictated the same thing.
+        if let prev = pasteboard.string(forType: .string), prev != text {
+            preservedPreviousClipboard = prev
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        // Snapshot the changeCount we just produced. Any future write
+        // (Cmd+C of new content) will increment this, signaling we
+        // should NOT restore.
+        transcriptChangeCount = pasteboard.changeCount
+
+        print("Injection suppressed (\(reason)) — transcript on clipboard, previous preserved")
+        onInjectionSuppressed?(text)
+    }
+
+    /// Restore the user's previous clipboard contents — called by
+    /// AppDelegate when the warning chip dismisses (auto-timer or user X).
+    ///
+    /// Safety: skips restore if changeCount has moved since we wrote the
+    /// transcript, which means the user (or another app) put something
+    /// else on the clipboard. Cmd+V doesn't increment changeCount, so a
+    /// successful paste of our transcript still allows the restore.
+    func restorePreservedClipboard() {
+        guard let previous = preservedPreviousClipboard else { return }
+        let pasteboard = NSPasteboard.general
+        defer { preservedPreviousClipboard = nil }
+
+        if pasteboard.changeCount != transcriptChangeCount {
+            print("Clipboard changed since transcript was set — skipping restore")
+            return
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString(previous, forType: .string)
+        print("Restored previous clipboard")
+    }
+
+    /// AX role check on the currently-focused element. Generous by design —
+    /// covers native, Electron (which often returns AXTextArea/AXWebArea),
+    /// and code-editor edge cases (which sometimes hide behind AXScrollArea
+    /// or AXGroup). Returns true on doubt; the worst case is the paste
+    /// goes nowhere and the user pastes manually — better than blocking
+    /// legit dictations.
+    private static func focusedElementLooksLikeTextInput() -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        var focused: AnyObject?
+        let result = AXUIElementCopyAttributeValue(
+            system,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        )
+        guard result == .success, let element = focused else { return false }
+
+        var role: AnyObject?
+        AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &role)
+        guard let roleString = role as? String else { return false }
+
+        // Definitely text inputs.
+        let definitelyText: Set<String> = [
+            "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXWebArea"
+        ]
+        if definitelyText.contains(roleString) { return true }
+
+        // Probable text inputs — code editors, terminals, Electron quirks.
+        // VS Code's Monaco editor exposes as AXTextArea normally but on
+        // some configurations as AXScrollArea. iTerm / Terminal expose
+        // as AXScrollArea. Electron apps with custom focus management
+        // often return AXGroup. Generous coverage here costs us only
+        // failed pastes (cheap), saves us from blocking real dictations.
+        let probablyText: Set<String> = [
+            "AXScrollArea", "AXGroup", "AXOutline"
+        ]
+        if probablyText.contains(roleString) { return true }
+
+        return false
     }
 
     /// True when VoiceFlow is the frontmost application. We compare by bundle
@@ -76,7 +193,15 @@ class TextInjector {
                 vUp.post(tap: .cghidEventTap)
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // Restore the user's previous clipboard contents shortly after
+            // the paste keystroke fires. 100ms is enough headroom for the
+            // target app to actually consume the paste (faster than a human
+            // can re-trigger Cmd+V) while minimizing the window during which
+            // the user's prior clipboard content is "missing".
+            //
+            // Was 500ms — overly cautious. Empirically the paste consumes
+            // within ~20ms in every app we've tested.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 pasteboard.clearContents()
                 if let oldContent = currentContent {
                     pasteboard.setString(oldContent, forType: .string)

@@ -385,36 +385,26 @@ struct SettingsView: View {
 
 // MARK: - Onboarding Wizard
 
-/// Four-step onboarding flow. Isolated from the main dashboard — first-run
-/// only (or user-initiated re-run from Settings → Reset).
+/// Three-step onboarding flow. Isolated from the main dashboard —
+/// first-run only (or user-initiated re-run from Settings → Setup).
 ///
 /// Steps:
 ///   1. Welcome       — what VoiceFlow does, in 15 seconds
 ///   2. Permissions   — mic + accessibility + input monitoring, with
 ///                      guided fallbacks for when TCC auto-prompt no-ops
-///   3. API Key       — provider choice + key entry, Groq-first (free)
-///   4. Test          — hold-fn demo with live transcript feedback
+///   3. Test          — hold-fn demo with live transcript feedback
 ///
-/// Design decisions:
-/// - State lives in OnboardingCoordinator (ObservableObject), not in a
-///   god-view struct. Each step view takes bindings/closures from the
-///   coordinator — testable, decoupled.
-/// - Linear nav (back/next) but back is always available. No "jump to
-///   step 3" affordance — order matters (permissions gate test, API key
-///   gates usefulness).
-/// - "Skip for now" available on Permissions + API Key for the power-user
-///   who knows what they're doing and doesn't want to be trapped.
-/// - Completion criteria: user successfully reaches the end of Test step
-///   (clicks Finish). We don't require a successful recording — some
-///   setups have broken Fn mapping and will only work after external fixes.
+/// Why no API Key step anymore: the embedded Groq beta key handles
+/// transcription out of the box. Users who want Hinglish or higher polish
+/// quality can add an OpenAI key later from Settings → Provider, and the
+/// upgrade pitch surfaces itself there. Onboarding stays under a minute.
 enum OnboardingStep: Int, CaseIterable {
-    case welcome, permissions, apiKey, test
+    case welcome, permissions, test
 
     var title: String {
         switch self {
         case .welcome:     return "Welcome"
         case .permissions: return "Permissions"
-        case .apiKey:      return "API Key"
         case .test:        return "Test"
         }
     }
@@ -422,7 +412,11 @@ enum OnboardingStep: Int, CaseIterable {
 
 @MainActor
 final class OnboardingCoordinator: ObservableObject {
-    @Published var currentStep: OnboardingStep = .welcome
+    @Published var currentStep: OnboardingStep
+
+    init(initialStep: OnboardingStep = .welcome) {
+        self.currentStep = initialStep
+    }
 
     func advance() {
         let next = OnboardingStep(rawValue: currentStep.rawValue + 1)
@@ -444,11 +438,31 @@ final class OnboardingCoordinator: ObservableObject {
 
 struct OnboardingView: View {
     @ObservedObject var permissionService: PermissionService
+    /// Deep-link entry point. Default `.welcome` for the standard
+    /// first-run flow; the chip's permissions-warning click sets this
+    /// to `.permissions` so the user lands directly on the screen
+    /// they need.
+    var initialStep: OnboardingStep = .welcome
     let onOpenSettings: () -> Void
     let onDone: () -> Void
 
-    @StateObject private var coordinator = OnboardingCoordinator()
+    @StateObject private var coordinator: OnboardingCoordinator
     @ObservedObject private var runStore = RunStore.shared
+
+    init(
+        permissionService: PermissionService,
+        initialStep: OnboardingStep = .welcome,
+        onOpenSettings: @escaping () -> Void,
+        onDone: @escaping () -> Void
+    ) {
+        self.permissionService = permissionService
+        self.initialStep = initialStep
+        self.onOpenSettings = onOpenSettings
+        self.onDone = onDone
+        // Inject the initial step into the coordinator. @StateObject's
+        // wrappedValue ensures this only runs on first init.
+        _coordinator = StateObject(wrappedValue: OnboardingCoordinator(initialStep: initialStep))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -462,8 +476,6 @@ struct OnboardingView: View {
                         OnboardingWelcomeStep()
                     case .permissions:
                         OnboardingPermissionsStep(permissionService: permissionService)
-                    case .apiKey:
-                        OnboardingAPIKeyStep()
                     case .test:
                         OnboardingTestStep(runStore: runStore)
                     }
@@ -477,7 +489,10 @@ struct OnboardingView: View {
         }
         .frame(width: 600, height: 640)
         .background(Theme.canvas)
-        .preferredColorScheme(.light)
+        // Onboarding inherits the user's theme choice. ThemeManager
+        // is a shared singleton so its mode is consistent across the
+        // main window and any standalone wizards.
+        .preferredColorScheme(ThemeManager.shared.colorScheme)
         .tint(Theme.accent)
         .onAppear {
             permissionService.refreshStatus()

@@ -44,13 +44,35 @@ final class RealtimeTranscriptionService: NSObject {
         var model: String
         /// ISO 639-1 code or "auto". Whisper-style language hint.
         var language: String
+        /// Human label for error messages — provider-agnostic UI without
+        /// having to switch on the URL host every time we format an error.
+        var providerLabel: String
 
         static func openAI(apiKey: String, language: String) -> Configuration {
             Configuration(
                 baseURL: URL(string: "wss://api.openai.com/v1/realtime?intent=transcription")!,
                 apiKey: apiKey,
                 model: "gpt-4o-mini-transcribe",
-                language: language
+                language: language,
+                providerLabel: "OpenAI"
+            )
+        }
+
+        /// Groq exposes the same OpenAI-Realtime protocol on a different
+        /// host. Same WebSocket message shape, same intent=transcription
+        /// query, same input_audio_buffer events. Only difference: the
+        /// host + the underlying transcription model.
+        ///
+        /// Model: whisper-large-v3-turbo. Groq's faster Whisper variant —
+        /// the actual reason FreeFlow on Groq feels snappier than us on
+        /// OpenAI's gpt-4o-mini-transcribe at peak load.
+        static func groq(apiKey: String, language: String) -> Configuration {
+            Configuration(
+                baseURL: URL(string: "wss://api.groq.com/openai/v1/realtime?intent=transcription")!,
+                apiKey: apiKey,
+                model: "whisper-large-v3-turbo",
+                language: language,
+                providerLabel: "Groq"
             )
         }
     }
@@ -74,7 +96,7 @@ final class RealtimeTranscriptionService: NSObject {
         var errorDescription: String? {
             switch self {
             case .notConnected: return "Realtime session is not connected."
-            case .server(let m): return "OpenAI Realtime error: \(m)"
+            case .server(let m): return "Realtime error: \(m)"
             case .decoding(let m): return "Could not decode event: \(m)"
             case .transport(let e): return "Transport error: \(e.localizedDescription)"
             case .missingFinal: return "Stream closed without a final transcript."

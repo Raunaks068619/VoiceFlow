@@ -23,7 +23,7 @@ struct RunLogView: View {
                 runList
             }
         }
-        .background(Theme.canvas)
+        .background(Theme.mainContent)
     }
 
     // MARK: - Header
@@ -137,6 +137,8 @@ struct RunRowView: View {
     let onToggle: () -> Void
     let onDelete: () -> Void
     @State private var showDeleteConfirm = false
+    @State private var showRetryConfirm = false
+    @State private var downloadFlash: String?
 
     private var statusColor: Color {
         switch summary.status {
@@ -175,14 +177,41 @@ struct RunRowView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Theme.textTertiary)
 
-                Button {
-                    showDeleteConfirm = true
+                // Three-dot row menu — replaces the standalone trash button.
+                // Wispr-Flow shape: one icon, opens a Menu with all per-row
+                // actions inside. Less visual chrome on every row, more
+                // affordances available when you actually need them.
+                Menu {
+                    Button {
+                        retryTranscript()
+                    } label: {
+                        Label("Retry transcript", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(summary.status == .failed)
+
+                    Button {
+                        downloadAudio()
+                    } label: {
+                        Label("Download audio", systemImage: "arrow.down.circle")
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete transcript", systemImage: "trash")
+                    }
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Theme.textTertiary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .alert("Delete this run?", isPresented: $showDeleteConfirm) {
                     Button("Cancel", role: .cancel) {}
                     Button("Delete", role: .destructive) { onDelete() }
@@ -220,6 +249,52 @@ struct RunRowView: View {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)
+    }
+
+    // MARK: - Row actions (three-dot menu)
+
+    /// Re-run polish on the existing audio. We re-use the stored audio file
+    /// + current settings (provider, style, processing mode). Notification
+    /// is broadcast so AppDelegate can pick it up — keeps the row view
+    /// decoupled from the recording/transcription orchestration layer.
+    private func retryTranscript() {
+        NotificationCenter.default.post(
+            name: Notification.Name("VoiceFlow.RetryRun"),
+            object: nil,
+            userInfo: ["runID": summary.id]
+        )
+    }
+
+    /// Copy the audio for this run to ~/Downloads with a human-readable
+    /// filename. Uses the same FileManager copy path the rest of the app
+    /// uses; no permission gates needed since it's the user's own
+    /// Downloads folder.
+    private func downloadAudio() {
+        guard let run = runStore.loadRun(id: summary.id),
+              let sourceURL = runStore.audioURL(for: run) else { return }
+
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let stem = "VoiceFlow_\(formatter.string(from: summary.createdAt))"
+        var dest = downloads.appendingPathComponent("\(stem).wav")
+
+        // Avoid clobbering — append a counter if a same-named file exists.
+        var counter = 2
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = downloads.appendingPathComponent("\(stem)_\(counter).wav")
+            counter += 1
+        }
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: dest)
+            // Reveal the file in Finder so the user knows it landed.
+            NSWorkspace.shared.activateFileViewerSelecting([dest])
+        } catch {
+            print("RunRowView: download failed — \(error)")
+        }
     }
 }
 
