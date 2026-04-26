@@ -1711,6 +1711,10 @@ final class FloatingChipWindow: NSPanel {
     /// Cmd+V to paste") plus the Tip badge + dismiss button.
     private static let windowSize = NSSize(width: 420, height: 40)
 
+    /// UserDefaults key for the user's preferred chip position. Stored as
+    /// "x,y" string of the bottom-left frame origin.
+    private static let originKey = "floating_chip_origin"
+
     init() {
         super.init(
             contentRect: NSRect(origin: .zero, size: Self.windowSize),
@@ -1721,9 +1725,6 @@ final class FloatingChipWindow: NSPanel {
         self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
         self.backgroundColor = .clear
         self.isOpaque = false
-        // Removed `hasShadow` — was producing the heavy halo effect that
-        // looked off in the warning + recording states. Inner views can
-        // add their own subtle shadows where needed.
         self.hasShadow = false
         self.ignoresMouseEvents = false
         self.isFloatingPanel = true
@@ -1732,12 +1733,35 @@ final class FloatingChipWindow: NSPanel {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         self.isReleasedWhenClosed = false
 
+        // Drag-to-reposition. `isMovableByWindowBackground` lets the user
+        // grab the chip's transparent area and drag — buttons inside still
+        // receive their click events normally because AppKit hit-tests
+        // interactive subviews first. The drag handle is everything that
+        // ISN'T a button.
+        self.isMovable = true
+        self.isMovableByWindowBackground = true
+
         let host = NSHostingView(rootView: FloatingChipView(model: model))
         host.sizingOptions = []
         host.frame = NSRect(origin: .zero, size: Self.windowSize)
         host.autoresizingMask = [.width, .height]
         self.contentView = host
         self.setContentSize(Self.windowSize)
+
+        // Persist position on every drag end. didMoveNotification fires
+        // after the user releases the mouse, so we don't write to defaults
+        // on every pixel of motion.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowMoved),
+            name: NSWindow.didMoveNotification,
+            object: self
+        )
+    }
+
+    @objc private func handleWindowMoved() {
+        let origin = self.frame.origin
+        UserDefaults.standard.set("\(origin.x),\(origin.y)", forKey: Self.originKey)
     }
 
     override var canBecomeKey: Bool { false }
@@ -1853,15 +1877,76 @@ final class FloatingChipWindow: NSPanel {
 
     // MARK: - Positioning
 
-    /// Bottom-center anchored, ~24pt above dock or screen edge.
+    /// Restore the user's saved position if present + still on-screen.
+    /// Otherwise default to bottom-center, ~24pt above dock.
     private func repositionToBottom() {
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let screen else { return }
         let visible = screen.visibleFrame
         let size = Self.windowSize
+
+        // 1. Try to restore saved position from a previous drag
+        if let saved = UserDefaults.standard.string(forKey: Self.originKey) {
+            let parts = saved.split(separator: ",").compactMap { Double($0) }
+            if parts.count == 2 {
+                let x = CGFloat(parts[0])
+                let y = CGFloat(parts[1])
+                let candidate = NSRect(x: x, y: y, width: size.width, height: size.height)
+                // Only restore if at least 50% of the chip would be on
+                // a connected screen — protects against display unplugs
+                // putting the chip somewhere unreachable.
+                let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(candidate) }
+                if onScreen {
+                    self.setFrame(candidate, display: true)
+                    return
+                }
+            }
+        }
+
+        // 2. Default — bottom-center
         let x = visible.midX - size.width / 2
         let y = visible.minY + 24
         self.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+    }
+}
+
+/// Solid dark-grey chip background with a subtle white border.
+///
+/// Earlier we tried .ultraThinMaterial + tint (glass morphism) but that
+/// stayed transparent enough to vanish on white backgrounds. A solid
+/// fill is honest about what it is: a dark UI chip that needs to be
+/// visible on every conceivable background. The white border at ~22%
+/// opacity gives definition on dark bgs (where the dark fill alone
+/// can blend into a dark window).
+///
+/// Single source of truth for the colors so all chip variants stay
+/// consistent: `Color.chipFill` for the body, `Color.chipBorder` for
+/// the outline.
+extension Color {
+    /// Body of the chip — dark charcoal, intentionally NOT pure black
+    /// (pure black is too aggressive on light bgs and looks like a hole).
+    static let chipFill   = Color(red: 0.13, green: 0.13, blue: 0.15)
+    /// 1pt outline color. White at low opacity reads on any bg.
+    static let chipBorder = Color.white.opacity(0.22)
+}
+
+private struct ChipGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.chipFill)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.chipBorder, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    fileprivate func chipGlass() -> some View {
+        self.modifier(ChipGlass())
     }
 }
 
@@ -1921,10 +2006,15 @@ struct FloatingChipView: View {
                 NotificationCenter.default.post(name: Notification.Name("VoiceFlow.OpenRunLog"), object: nil)
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.white)
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.black))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Circle().fill(Color.chipFill)
+                    )
+                    .overlay(
+                        Circle().strokeBorder(Color.chipBorder, lineWidth: 1)
+                    )
             }
             .buttonStyle(.plain)
             .help("Open Run Log")
@@ -1933,15 +2023,13 @@ struct FloatingChipView: View {
             .offset(x: hovering ? 0 : 8)
             .allowsHitTesting(hovering)
 
-            // Main pill — passive orange dot in the corner when permissions
-            // are missing. When permissions ARE missing, the pill is also
-            // clickable and routes to onboarding (the orange dot becomes a
-            // call-to-action affordance). When permissions are fine, click
-            // is a no-op so the pill doesn't surprise the user.
-            //
-            // Why this matters: Input Monitoring missing means fn never
-            // fires our hotkey listener. The pill click is the user's
-            // only direct path to the fix.
+            // Main pill. Two visual modes:
+            //  • Hovered    → full 58×22 capsule with waveform glyph (clickable
+            //                 if permissions are missing, routes to onboarding)
+            //  • Not hovered → slim 36×4 bar — barely there, drag-only. Stays
+            //                 out of the way of click targets at the dock area.
+            // Hit area is fixed via the outer HStack frame so hover detection
+            // stays reliable on the slim variant.
             Button {
                 if !model.hasAllPermissions {
                     NotificationCenter.default.post(
@@ -1951,17 +2039,36 @@ struct FloatingChipView: View {
                 }
             } label: {
                 HStack(spacing: 0) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white)
+                    if hovering {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .transition(.opacity)
+                    }
                 }
-                .frame(width: 58, height: 22)
+                .frame(
+                    width:  hovering ? 64 : 40,
+                    height: hovering ? 24 : 4
+                )
+                // Solid dark-grey fill in BOTH variants — no transparency.
+                // Visible on white backgrounds (as a dark shape) AND on
+                // dark backgrounds (the white border outlines it).
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color.black)
+                        .fill(Color.chipFill)
+                )
+                .overlay(
+                    // Border on slim AND hovered. Slim chip is 4pt tall
+                    // so use a thinner stroke; full chip gets the standard
+                    // 1pt for clean edge definition.
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            Color.chipBorder,
+                            lineWidth: hovering ? 1 : 0.5
+                        )
                 )
                 .overlay(alignment: .topTrailing) {
-                    if !model.hasAllPermissions {
+                    if !model.hasAllPermissions && hovering {
                         Circle()
                             .fill(Theme.accent)
                             .frame(width: 7, height: 7)
@@ -1970,6 +2077,13 @@ struct FloatingChipView: View {
                             )
                             .offset(x: 2, y: -2)
                             .transition(.scale.combined(with: .opacity))
+                    } else if !model.hasAllPermissions && !hovering {
+                        // Slim mode: tint the slim bar orange instead of
+                        // showing a separate dot — same signal, fits the
+                        // small footprint.
+                        Capsule()
+                            .fill(Theme.accent)
+                            .frame(width: 40, height: 4)
                     }
                 }
             }
@@ -1982,10 +2096,15 @@ struct FloatingChipView: View {
                 NotificationCenter.default.post(name: Notification.Name("VoiceFlow.OpenSettings"), object: nil)
             } label: {
                 Image(systemName: "gearshape.fill")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.white)
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.black))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Circle().fill(Color.chipFill)
+                    )
+                    .overlay(
+                        Circle().strokeBorder(Color.chipBorder, lineWidth: 1)
+                    )
             }
             .buttonStyle(.plain)
             .help("Open Settings")
@@ -1994,10 +2113,11 @@ struct FloatingChipView: View {
             .offset(x: hovering ? 0 : -8)
             .allowsHitTesting(hovering)
         }
-        // Stable hover bounds. .contentShape makes the entire HStack
-        // (including gaps and invisible buttons) part of the hit-test
-        // region, so the cursor never falls into "no man's land" and
-        // breaks hover continuity.
+        // Fixed hit area — bigger than ANY visible state so the cursor
+        // can find the slim 4px chip easily. Also stabilizes hover
+        // detection: bounds don't change as the chip morphs between
+        // slim and full, so hover doesn't flicker on/off mid-transition.
+        .frame(width: 180, height: 30)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(.spring(response: 0.28, dampingFraction: 0.78), value: hovering)
@@ -2007,22 +2127,16 @@ struct FloatingChipView: View {
 
     private var recordingChip: some View {
         ChipWaveform(audioLevel: model.audioLevel)
-            .frame(width: 92, height: 22)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.black)
-            )
+            .frame(width: 100, height: 24)
+            .chipGlass()
     }
 
     // MARK: Processing — pill with shimmer
 
     private var processingChip: some View {
         ChipShimmer()
-            .frame(width: 92, height: 22)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.black)
-            )
+            .frame(width: 100, height: 24)
+            .chipGlass()
     }
 
     // MARK: Warning — bigger pill with Tip badge + dismiss button
@@ -2072,12 +2186,9 @@ struct FloatingChipView: View {
             .buttonStyle(.plain)
             .help("Dismiss")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color.black)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .chipGlass()
     }
 
     // MARK: Permissions warning — orange-tinted, click to open onboarding
@@ -2125,12 +2236,9 @@ struct FloatingChipView: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.white.opacity(0.55))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.black)
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .chipGlass()
         }
         .buttonStyle(.plain)
         .help("Open onboarding to grant permissions")
