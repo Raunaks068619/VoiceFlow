@@ -394,7 +394,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // and how to retrieve it.
         textInjector?.onInjectionSuppressed = { [weak self] _ in
             DispatchQueue.main.async {
-                self?.floatingChip?.flashNoInputWarning(durationSeconds: 4.5)
+                guard let self = self else { return }
+                // Suppress the warning chip during onboarding — the test
+                // step intentionally has no text input to inject into,
+                // and the warning would confuse the user (they're doing
+                // exactly what onboarding asked them to do).
+                //
+                // Their transcript still appears in the test step's
+                // "YOUR TRANSCRIPT" card via the RunStore observer.
+                if self.onboardingWindow?.isVisible == true { return }
+
+                self.floatingChip?.flashNoInputWarning(durationSeconds: 4.5)
             }
         }
         hotKeyListener = HotKeyListener()
@@ -454,6 +464,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // the orange dot at first paint, before any permission change
         // notification fires.
         refreshChipPermissionState()
+        // Start the periodic safety-net poll so the orange dot clears
+        // within ~3s of any permission change, regardless of whether
+        // we received an explicit transition event.
+        startPermissionPolling()
 
         // Notification routing for chip side-buttons. SwiftUI views post
         // names when their buttons are tapped; AppDelegate is the
@@ -504,6 +518,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.openOnboardingIfNeeded(force: true) }
+        // App regained focus (typically: user came back from System Settings
+        // after granting a permission). Re-poll TCC state so the chip's
+        // orange dot disappears the moment they fixed the missing perm.
+        // Without this, the orange dot would only clear when the user
+        // explicitly triggered a refresh (e.g. clicking the chip).
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.permissionService.refreshStatus()
+            self?.refreshChipPermissionState()
+        }
         // User clicked X on the warning chip — dismiss immediately
         // instead of waiting for the auto-revert timer. Also restore
         // their previous clipboard since the warning's lifetime is the
@@ -607,12 +634,48 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     /// Sync the chip's passive permission indicator with the current TCC
-    /// state. Called on app launch and after any permission change. Cheap
-    /// (one observable property push); the chip's setPermissionsAvailable
-    /// dedupes via Equatable check, so no SwiftUI rebuild churn.
+    /// state. Called on app launch, on app re-activation, and after any
+    /// permission change. We refreshStatus FIRST so we don't read a stale
+    /// @Published value (TCC grants from System Settings can lag our
+    /// cached state by ~100ms). Then we schedule a delayed re-check to
+    /// catch the race where TCC has flipped but our cache missed it on
+    /// the first read.
     func refreshChipPermissionState() {
+        permissionService.refreshStatus()
         let allGranted = permissionService.allRequiredGranted
         floatingChip?.setPermissionsAvailable(allGranted)
+
+        // Belt-and-suspenders: re-check after 0.6s. TCC sometimes lags
+        // refreshStatus; a single poll right after grant can read stale.
+        // Cheap call, no perceptible cost.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self = self else { return }
+            self.permissionService.refreshStatus()
+            let recheck = self.permissionService.allRequiredGranted
+            self.floatingChip?.setPermissionsAvailable(recheck)
+        }
+    }
+
+    /// Periodic safety-net poll for the chip's permission indicator.
+    /// Catches edge cases where neither onPermissionNewlyGranted nor
+    /// didBecomeActive fired (e.g. user granted in System Settings and
+    /// switched to a third-party app, then back to ours via cmd-tab —
+    /// didBecomeActive fires in some macOS versions but not all).
+    /// 3-second cadence is invisible to the user and costs ~one AX call
+    /// per check.
+    private var permissionPollTimer: Timer?
+    func startPermissionPolling() {
+        stopPermissionPolling()
+        permissionPollTimer = Timer.scheduledTimer(
+            withTimeInterval: 3.0,
+            repeats: true
+        ) { [weak self] _ in
+            self?.refreshChipPermissionState()
+        }
+    }
+    func stopPermissionPolling() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
     }
 
     func openMainWindow() {
