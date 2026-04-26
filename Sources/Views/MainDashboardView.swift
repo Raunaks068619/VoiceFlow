@@ -12,36 +12,109 @@ import AppKit
 /// values compile to constants; zero dispatch overhead. If we ever need
 /// dark-mode variants, convert to computed properties on a ThemeMode enum.
 enum Theme {
-    // Background — warm cream, not pure white. The half-degree of warmth
-    // reads as "softer, more human" vs. stock macOS white.
-    static let canvas          = Color(red: 0.961, green: 0.945, blue: 0.918)   // #F5F1EA
-    static let surface         = Color(red: 0.980, green: 0.968, blue: 0.945)   // #FAF7F1
-    static let surfaceElevated = Color.white
-    // Hero/dark surface — warm dark brown, NOT pure black. Pure black on a
-    // cream canvas reads as cheap (the contrast is too violent). A warm
-    // brown carries the same "dark, premium" weight without screaming.
-    static let surfaceDark     = Color(red: 0.094, green: 0.082, blue: 0.067)   // #18150D
-    static let surfaceDarkSoft = Color(red: 0.149, green: 0.129, blue: 0.106)   // #26211B — slightly lighter for nested elements
+    // MARK: - Adaptive color helper
+    //
+    // Every token has two values — light + dark. Dynamic NSColor resolves
+    // at draw time based on the effective appearance, which we override
+    // app-wide via .preferredColorScheme(themeManager.colorScheme). So the
+    // user's theme toggle flips an environment value, and every surface
+    // (cards, text, dividers) repaints itself without per-call ifs.
+    private static func adaptive(
+        light: (Double, Double, Double),
+        dark: (Double, Double, Double)
+    ) -> Color {
+        Color(NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let (r, g, b) = isDark ? dark : light
+            return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        }))
+    }
+    private static func adaptiveBlackWhite(
+        lightOpacity: Double,
+        darkOpacity: Double
+    ) -> Color {
+        Color(NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return isDark
+                ? NSColor.white.withAlphaComponent(darkOpacity)
+                : NSColor.black.withAlphaComponent(lightOpacity)
+        }))
+    }
 
-    // Text
-    static let textPrimary     = Color(red: 0.102, green: 0.090, blue: 0.078)   // #1A1714
-    static let textSecondary   = Color(red: 0.353, green: 0.329, blue: 0.314)   // #5A5450
-    static let textTertiary    = Color(red: 0.557, green: 0.518, blue: 0.486)
+    // MARK: - Background tones (three-level hierarchy)
+    //
+    //   canvas      → sidebar / chrome
+    //   mainContent → main pane
+    //   surface     → cards on top of mainContent
+    //
+    // Dark mode uses warm, coffee-toned darks (not pure black or cool grey)
+    // — it should feel like a warm dim room, not a clinical OLED screen.
+    // Multiple levels of dark create depth without harsh contrast.
+    static let canvas = adaptive(
+        light: (0.961, 0.945, 0.918),   // #F5F1EA cream
+        dark:  (0.106, 0.098, 0.086)    // #1B1916 warm coffee
+    )
+    static let mainContent = adaptive(
+        light: (0.984, 0.980, 0.969),   // #FBFAF7 almost-white
+        dark:  (0.078, 0.071, 0.063)    // #141210 deeper warm dark
+    )
+    static let surface = adaptive(
+        light: (0.980, 0.968, 0.945),   // #FAF7F1 light card
+        dark:  (0.141, 0.129, 0.114)    // #24211D raised card
+    )
+    static let surfaceElevated = adaptive(
+        light: (1.000, 1.000, 1.000),   // pure white
+        dark:  (0.180, 0.165, 0.149)    // #2E2A26 highest elevation
+    )
+    // Hero / dark surface — stays dark in BOTH modes. In light mode it's
+    // the high-contrast black hero card; in dark mode it shifts to a
+    // slightly different shade so it still feels "elevated" against the
+    // already-dark canvas.
+    static let surfaceDark = adaptive(
+        light: (0.094, 0.082, 0.067),   // #18150D warm black
+        dark:  (0.043, 0.039, 0.035)    // #0B0A09 deepest — sub-surface
+    )
+    static let surfaceDarkSoft = adaptive(
+        light: (0.149, 0.129, 0.106),
+        dark:  (0.220, 0.204, 0.184)    // brighter in dark for nested element contrast
+    )
+
+    // Text — soft warm whites in dark mode, never pure white (eye strain).
+    static let textPrimary = adaptive(
+        light: (0.102, 0.090, 0.078),   // #1A1714 near-black warm
+        dark:  (0.961, 0.945, 0.918)    // #F5F1EA cream (matches light canvas)
+    )
+    static let textSecondary = adaptive(
+        light: (0.353, 0.329, 0.314),   // #5A5450 muted brown
+        dark:  (0.706, 0.678, 0.643)    // #B4ADA4 muted warm grey
+    )
+    static let textTertiary = adaptive(
+        light: (0.557, 0.518, 0.486),
+        dark:  (0.502, 0.471, 0.439)    // #807870 deeper muted
+    )
     static let textOnDark      = Color(red: 0.961, green: 0.945, blue: 0.918)
 
-    // Accent — the orange "fn" badge. Used sparingly: hotkey pills, active
-    // state, primary CTAs.
+    // Accent — same orange in both modes. Pops well on either bg.
     static let accent          = Color(red: 1.000, green: 0.549, blue: 0.102)   // #FF8C1A
     static let accentSoft      = Color(red: 1.000, green: 0.549, blue: 0.102).opacity(0.15)
 
-    // Status
-    static let success         = Color(red: 0.196, green: 0.647, blue: 0.404)
-    static let warning         = Color(red: 0.902, green: 0.549, blue: 0.067)
-    static let danger          = Color(red: 0.843, green: 0.275, blue: 0.275)
+    // Status — slightly desaturated in dark for less harshness on dark bg.
+    static let success = adaptive(
+        light: (0.196, 0.647, 0.404),
+        dark:  (0.337, 0.745, 0.486)
+    )
+    static let warning = adaptive(
+        light: (0.902, 0.549, 0.067),
+        dark:  (0.957, 0.671, 0.247)
+    )
+    static let danger = adaptive(
+        light: (0.843, 0.275, 0.275),
+        dark:  (0.957, 0.408, 0.408)
+    )
 
-    // Dividers / borders
-    static let divider         = Color.black.opacity(0.06)
-    static let dividerStrong   = Color.black.opacity(0.12)
+    // Dividers — opacity-based black/white that flips per mode.
+    static let divider         = adaptiveBlackWhite(lightOpacity: 0.06, darkOpacity: 0.08)
+    static let dividerStrong   = adaptiveBlackWhite(lightOpacity: 0.12, darkOpacity: 0.16)
 
     // Corner radii — continuous style everywhere for that soft, rounded feel
     enum Radius {
@@ -189,6 +262,7 @@ struct MainDashboardView: View {
     let onQuit: () -> Void
 
     @StateObject private var localDetector = LocalModelDetector.shared
+    @ObservedObject private var themeManager = ThemeManager.shared
 
     private var isRecording: Bool { recordingState.isRecording }
 
@@ -245,6 +319,12 @@ struct MainDashboardView: View {
     @State private var polishBackendId: String = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey) ?? PolishBackend.defaultId
     @State private var outputMode: String = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.cleanHinglish.rawValue
     @State private var showKeySaved = false
+    /// "Want Hinglish + 100+ languages?" upgrade disclosure on the Groq
+    /// tier. Persisted so the open/closed state survives view rebuilds.
+    @State private var showOpenAIUpgrade: Bool = false
+    /// "Advanced — use my own Groq key" disclosure. Hidden by default;
+    /// power users find it when they need it.
+    @State private var showAdvancedKeys: Bool = false
 
     // MARK: - Static option lists
 
@@ -265,10 +345,23 @@ struct MainDashboardView: View {
         (TranscriptOutputStyle.cleanHinglish.rawValue, "Clean + Hinglish")
     ]
 
-    private let cloudPolishOptions: [(id: String, label: String)] = [
-        ("openai::gpt-4.1-mini", "OpenAI · gpt-4.1-mini (default)"),
-        ("openai::gpt-4.1-nano", "OpenAI · gpt-4.1-nano (cheaper, stronger role adherence)")
-    ]
+    /// Cloud polish options. Filtered by tier:
+    ///   - Always includes Groq llama (free, works with embedded key)
+    ///   - OpenAI options ONLY appear when the user has added an OpenAI key
+    ///     (otherwise selecting them would just fail at request time)
+    private var cloudPolishOptions: [(id: String, label: String)] {
+        var opts: [(id: String, label: String)] = [
+            ("groq::llama-3.3-70b-versatile",
+             "Groq · llama-3.3-70b (free, default)")
+        ]
+        if !openAIKey.isEmpty {
+            opts.append(("openai::gpt-4.1-mini",
+                         "OpenAI · gpt-4.1-mini (recommended)"))
+            opts.append(("openai::gpt-4.1-nano",
+                         "OpenAI · gpt-4.1-nano (cheaper, stronger role adherence)"))
+        }
+        return opts
+    }
 
     /// Cloud options + detected local models. Updates reactively as
     /// LocalModelDetector.shared.models changes.
@@ -306,6 +399,12 @@ struct MainDashboardView: View {
 
                 Spacer()
 
+                // Theme toggle — light/dark, persisted via ThemeManager.
+                // Lives above the GitHub block so it's discoverable but
+                // not the first thing users see.
+                ThemeTogglePill(manager: themeManager)
+                    .padding(.horizontal, 2)
+
                 // GitHub Star block — sidebar-sized, replaces the wide
                 // StarRepoCard that used to sit on Home. Same intent
                 // (drive-by stars + social proof) in the right surface.
@@ -329,7 +428,10 @@ struct MainDashboardView: View {
             .padding(.horizontal, 10)
             .background(Theme.canvas)
 
-            // Content
+            // Content — uses mainContent (almost-white) so the warmer
+            // cream sidebar reads as a distinct nav surface. Cards inside
+            // each tab use Theme.surface (slightly cream) to define
+            // themselves against this background.
             Group {
                 switch selectedTab {
                 case .home:       homeContent
@@ -339,19 +441,33 @@ struct MainDashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.canvas)
+            .background(Theme.mainContent)
         }
         .frame(minWidth: 860, minHeight: 640)
-        // Lock to light appearance — our Theme is cream-bg / dark-text.
-        // Without this, system semantic colors (.primary/.secondary) flip
-        // to near-white on dark-mode Macs, making all text invisible.
-        .preferredColorScheme(.light)
+        // Drive the entire window's color scheme from ThemeManager. All
+        // Theme.* tokens are dynamic NSColors that respond to whatever
+        // scheme is set here, so this single override repaints every
+        // surface the moment the user toggles.
+        .preferredColorScheme(themeManager.colorScheme)
         // Global accent = orange, so segmented pickers, buttons, and
         // focused text fields use the brand color instead of system blue.
         .tint(Theme.accent)
         .onAppear {
             permissionService.refreshStatus()
             localDetector.detect()
+        }
+        // Listen for menu-bar / chip / external requests to jump to a
+        // specific tab. AppDelegate's openSettings() now posts this
+        // instead of opening the legacy SettingsView popup.
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceFlow.SelectTab"))) { note in
+            guard let raw = note.userInfo?["tab"] as? String else { return }
+            switch raw {
+            case "home":       selectedTab = .home
+            case "scratchpad": selectedTab = .scratchpad
+            case "runLog":     selectedTab = .runLog
+            case "settings":   selectedTab = .settings
+            default: break
+            }
         }
     }
 
@@ -388,20 +504,40 @@ struct MainDashboardView: View {
     ///
     /// Deeper settings live under the Settings tab. Home stays light and
     /// glanceable — the thing users see first shouldn't be a config dump.
+    /// Two-column layout with two sticky regions:
+    /// - Left column has a fixed greeting at the top and a scroll view
+    ///   underneath containing the hero card + transcript timeline.
+    /// - Right column has a fixed stats card pinned to the top.
+    ///
+    /// "Sticky" here means literally outside the ScrollView, not
+    /// LazyVStack pinned headers — that would still let them scroll
+    /// off in some configurations. Putting them outside guarantees
+    /// they never move regardless of scroll content.
     private var homeContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.xl) {
-                // Top section — greeting, hero, stats side-by-side
+        HStack(alignment: .top, spacing: Theme.Space.md) {
+            // Left column — greeting fixed at top, content scrolls below
+            VStack(alignment: .leading, spacing: 0) {
                 greetingBlock
-                HStack(alignment: .top, spacing: Theme.Space.md) {
-                    heroCard
-                    statsCardCompact
+                    .padding(.horizontal, Theme.Space.xl)
+                    .padding(.top, Theme.Space.xl)
+                    .padding(.bottom, Theme.Space.lg)
+                    .background(Theme.mainContent) // mask any content scrolling under
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Space.xl) {
+                        heroCard
+                        dictationsTimeline
+                    }
+                    .padding(.horizontal, Theme.Space.xl)
+                    .padding(.bottom, Theme.Space.xl)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                // Full date-grouped transcript timeline
-                dictationsTimeline
             }
-            .padding(Theme.Space.xl)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Right column — stats fixed at top
+            statsCardCompact
+                .padding(.top, Theme.Space.xl)
+                .padding(.trailing, Theme.Space.xl)
         }
     }
 
@@ -524,7 +660,7 @@ struct MainDashboardView: View {
 
             VStack(spacing: 0) {
                 ForEach(rows.indices, id: \.self) { i in
-                    timelineRow(rows[i])
+                    HomeTimelineRow(summary: rows[i], runStore: runStore)
                     if i < rows.count - 1 {
                         Divider().background(Theme.divider)
                     }
@@ -532,23 +668,6 @@ struct MainDashboardView: View {
             }
             .themedCard(padding: 0)
         }
-    }
-
-    private func timelineRow(_ summary: RunSummary) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Text(DashboardStats.timeOnly(summary.createdAt))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(Theme.textTertiary)
-                .frame(width: 64, alignment: .leading)
-
-            Text(summary.previewText.isEmpty ? "—" : summary.previewText)
-                .font(.system(size: 13))
-                .foregroundColor(Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
     }
 
     // Date grouping — derives a stable day key + a human label per group.
@@ -614,9 +733,20 @@ struct MainDashboardView: View {
     private var languageCard: some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Language")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                HStack {
+                    Text("Language")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    if isOnGroqTier {
+                        Text("Locked to English")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.textTertiary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Theme.divider))
+                    }
+                }
                 ThemedPillTabs(
                     options: languages.map { (id: $0.code, label: $0.label) },
                     selection: $selectedLanguage
@@ -624,12 +754,59 @@ struct MainDashboardView: View {
                 .onChange(of: selectedLanguage) { newValue in
                     UserDefaults.standard.set(newValue, forKey: "language")
                 }
-                Text("Auto-detect picks the language per recording. Lock to Hindi or English if you're always speaking one. Locking to English will also translate any Hindi you speak into English.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .disabled(isOnGroqTier)
+                .opacity(isOnGroqTier ? 0.45 : 1.0)
+
+                if isOnGroqTier {
+                    Text("Groq's free tier supports English only. Add your OpenAI API key in Settings → Provider to unlock Hindi, Hinglish, and 100+ other languages.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Auto-detect picks the language per recording. Lock to Hindi or English if you're always speaking one. Locking to English will also translate any Hindi you speak into English.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+        // Force English when locked to Groq tier — drops a one-shot
+        // .onChange-style write so the persisted UserDefaults value
+        // matches the locked UI state, even if user had previously
+        // selected Hindi on a different provider.
+        .onAppear {
+            if isOnGroqTier && selectedLanguage != "en" {
+                selectedLanguage = "en"
+                UserDefaults.standard.set("en", forKey: "language")
+            }
+        }
+        .onChange(of: provider) { _ in
+            if isOnGroqTier && selectedLanguage != "en" {
+                selectedLanguage = "en"
+                UserDefaults.standard.set("en", forKey: "language")
+            }
+        }
+    }
+
+    /// True when the user is on the Groq free tier — i.e. they've selected
+    /// Groq as the transcription provider AND haven't added an OpenAI key.
+    /// Drives lock states across language + style pickers + polish dropdown.
+    private var isOnGroqTier: Bool {
+        provider == TranscriptionProvider.groq.rawValue && openAIKey.isEmpty
+    }
+
+    /// Output styles available given the current tier. Drops `cleanHinglish`
+    /// + `translateEnglish` on the Groq tier — neither works reliably with
+    /// the embedded Groq pipeline. The `outputStyleCard` falls through to
+    /// `clean` automatically when Groq is selected.
+    private var visibleOutputModes: [(id: String, label: String)] {
+        if isOnGroqTier {
+            return outputModes.filter {
+                $0.id == TranscriptOutputStyle.verbatim.rawValue ||
+                $0.id == TranscriptOutputStyle.clean.rawValue
+            }
+        }
+        return outputModes
     }
 
     private var transcriptionModeCard: some View {
@@ -792,10 +969,158 @@ struct MainDashboardView: View {
                 realtimeStreamingCard
                 polishModelCard
                 outputStyleCard
+                permissionsCard
+                setupCard
                 footerActions
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: Settings — Permissions card
+
+    /// Live status of the three TCC permissions VoiceFlow requires. Inline
+    /// "Open Settings" button per row when the permission isn't granted —
+    /// faster than navigating System Settings manually.
+    private var permissionsCard: some View {
+        cardContainer {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Permissions")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    Button {
+                        permissionService.refreshStatus()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Re-check permission status")
+                }
+
+                permissionRow(
+                    title: "Microphone",
+                    subtitle: "Required to hear your voice",
+                    state: permissionService.microphoneState,
+                    pane: .microphone
+                )
+                permissionRow(
+                    title: "Accessibility",
+                    subtitle: "Required to type the transcript into other apps",
+                    state: permissionService.accessibilityState,
+                    pane: .accessibility
+                )
+                permissionRow(
+                    title: "Input Monitoring",
+                    subtitle: "Required to detect fn key presses",
+                    state: permissionService.inputMonitoringState,
+                    pane: .inputMonitoring
+                )
+
+                if !permissionService.allRequiredGranted {
+                    Text("Global hotkeys won't work until all three are granted.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.warning)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    private func permissionRow(
+        title: String,
+        subtitle: String,
+        state: PermissionState,
+        pane: PermissionPane
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: state.isGranted ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 16))
+                .foregroundColor(state.isGranted ? Theme.success : Theme.textTertiary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Theme.textPrimary)
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+            }
+
+            Spacer()
+
+            if state.isGranted {
+                Text("Granted")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.success)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Theme.success.opacity(0.12)))
+            } else {
+                Button {
+                    permissionService.openPrivacyPane(pane)
+                } label: {
+                    Text("Open Settings")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Theme.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: Settings — Setup card (re-run onboarding)
+
+    /// Escape hatch for users who want to walk the welcome flow again —
+    /// useful for support scenarios ("can you walk me through permissions
+    /// again?") and for testing the wizard during dev. Posts a notification
+    /// that AppDelegate listens for; doesn't drag onboarding state into
+    /// MainDashboardView.
+    private var setupCard: some View {
+        cardContainer {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Setup")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text("Walk through the welcome flow again to revisit permissions, API keys, and the test step.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("VoiceFlow.RestartOnboarding"),
+                        object: nil
+                    )
+                } label: {
+                    Text("Re-run onboarding")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Theme.surfaceElevated)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(Theme.dividerStrong, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -855,35 +1180,81 @@ struct MainDashboardView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(Theme.textPrimary)
 
+                // Pill picker. Labels reflect the actual capability split:
+                // Groq is fast English (we lock language to English on this
+                // tier — see languageCard); OpenAI unlocks Hinglish + 100+
+                // languages.
                 ThemedPillTabs(
                     options: [
-                        (id: TranscriptionProvider.groq.rawValue,   label: "Groq · Free · English"),
-                        (id: TranscriptionProvider.openai.rawValue, label: "OpenAI · Paid · Hi+En")
+                        (id: TranscriptionProvider.groq.rawValue,   label: "Groq · Fast English"),
+                        (id: TranscriptionProvider.openai.rawValue, label: "OpenAI · Multilingual")
                     ],
                     selection: $provider
                 )
                 .onChange(of: provider) { newValue in
                     UserDefaults.standard.set(newValue, forKey: "transcription_provider")
+                    // Provider changed — re-evaluate polish default. If
+                    // user is moving FROM Groq with no OpenAI key set,
+                    // their polish_backend_id might still be groq::llama
+                    // which is fine for OpenAI provider too (works either
+                    // way). No-op for now; the polish dropdown filters
+                    // available options based on key state.
                 }
 
                 Divider().background(Theme.divider)
 
                 if provider == TranscriptionProvider.groq.rawValue {
-                    keyRow(
-                        title: "Groq API Key",
-                        placeholder: "gsk_...",
-                        help: "Free tier. Get a key at console.groq.com/keys",
-                        text: $groqKey,
-                        onCommit: {
-                            UserDefaults.standard.set(groqKey, forKey: "groq_api_key")
-                            flashSaved()
-                        }
-                    )
+                    groqProviderBody
                 } else {
+                    openAIProviderBody
+                }
+
+                if showKeySaved {
+                    Text("✓ Saved")
+                        .font(.caption)
+                        .foregroundColor(Theme.success)
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    /// Body when Groq is the active provider. Free tier badge + the
+    /// upgrade-to-OpenAI marketing pitch + an Advanced disclosure for
+    /// the user's own Groq key (rare but supported).
+    @ViewBuilder
+    private var groqProviderBody: some View {
+        // Free tier status
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundColor(Theme.success)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Free tier active")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text("Fast English dictation, no setup needed.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+            }
+            Spacer()
+        }
+
+        // OpenAI upgrade marketing pitch — visible by default, opens to
+        // a key-entry field when user expands.
+        DisclosureGroup(
+            isExpanded: $showOpenAIUpgrade,
+            content: {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Add your OpenAI API key to unlock multilingual transcription, Hinglish, and higher-quality polish via GPT-4. You pay OpenAI directly — typically ~$0.18/hour of audio, much cheaper than Wispr Flow's flat subscription.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     keyRow(
                         title: "OpenAI API Key",
                         placeholder: "sk-...",
-                        help: "Paid. Get a key at platform.openai.com/api-keys",
+                        help: "Get a key at platform.openai.com/api-keys",
                         text: $openAIKey,
                         onCommit: {
                             UserDefaults.standard.set(openAIKey, forKey: "openai_api_key")
@@ -891,15 +1262,60 @@ struct MainDashboardView: View {
                         }
                     )
                 }
-
-                if showKeySaved {
-                    Text("✓ Saved")
-                        .font(.caption)
-                        .foregroundColor(.green)
-                        .transition(.opacity)
+                .padding(.top, 8)
+            },
+            label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.accent)
+                    Text("Want Hinglish + 100+ languages?")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
                 }
             }
-        }
+        )
+        .tint(Theme.accent)
+
+        // Advanced — bring-your-own Groq key. Hidden by default since
+        // 99% of free-tier users don't have one or care.
+        DisclosureGroup(
+            isExpanded: $showAdvancedKeys,
+            content: {
+                keyRow(
+                    title: "Groq API Key (override)",
+                    placeholder: "gsk_...",
+                    help: "Optional. Leave empty to keep using the embedded beta key.",
+                    text: $groqKey,
+                    onCommit: {
+                        UserDefaults.standard.set(groqKey, forKey: "groq_api_key")
+                        flashSaved()
+                    }
+                )
+                .padding(.top, 8)
+            },
+            label: {
+                Text("Advanced — use my own Groq key")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+            }
+        )
+        .tint(Theme.textTertiary)
+    }
+
+    /// Body when OpenAI is the active provider. Just the API key field.
+    @ViewBuilder
+    private var openAIProviderBody: some View {
+        keyRow(
+            title: "OpenAI API Key",
+            placeholder: "sk-...",
+            help: "Paid. Get a key at platform.openai.com/api-keys",
+            text: $openAIKey,
+            onCommit: {
+                UserDefaults.standard.set(openAIKey, forKey: "openai_api_key")
+                flashSaved()
+            }
+        )
     }
 
     private var polishModelCard: some View {
@@ -964,11 +1380,25 @@ struct MainDashboardView: View {
     private var outputStyleCard: some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Output Style")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                HStack {
+                    Text("Output Style")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    if isOnGroqTier {
+                        Text("Hinglish requires OpenAI")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.textTertiary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Theme.divider))
+                    }
+                }
+                // On Groq tier: hide the Hinglish option entirely so user
+                // doesn't pick it expecting it to work. On OpenAI tier:
+                // show the full list.
                 ThemedPillTabs(
-                    options: outputModes.map { (id: $0.id, label: $0.label) },
+                    options: visibleOutputModes.map { (id: $0.id, label: $0.label) },
                     selection: $outputMode
                 )
                 .onChange(of: outputMode) { newValue in
@@ -1198,6 +1628,796 @@ enum DashboardStats {
     }
 }
 
+// MARK: - FocusDetector
+
+/// On-demand classifier for the currently-focused UI element. No polling —
+/// AppDelegate calls `detectNow()` at the moment fn is pressed, and only
+/// then. Polling was wrong: it caused the chip to morph constantly as the
+/// user clicked between apps, which is noise. Focus state only matters
+/// when the user attempts to dictate.
+///
+/// Requires Accessibility permission (already held for Fn hotkey).
+///
+/// Not `@MainActor` — the AX APIs are thread-safe and the class has no
+/// shared mutable state. Callers can invoke from any thread.
+final class FocusDetector {
+    enum FocusState: Equatable {
+        case textInput
+        case nonText
+        case noFocus
+    }
+
+    /// One AX call. Returns instantly. Safe to call from main thread.
+    func detectNow() -> FocusState {
+        let system = AXUIElementCreateSystemWide()
+        var focused: AnyObject?
+        let result = AXUIElementCopyAttributeValue(
+            system,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        )
+        guard result == .success, let element = focused else { return .noFocus }
+        let role = roleOf(element as! AXUIElement)
+        switch role {
+        case "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXWebArea":
+            return .textInput
+        default:
+            return .nonText
+        }
+    }
+
+    private func roleOf(_ element: AXUIElement) -> String? {
+        var role: AnyObject?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        return role as? String
+    }
+}
+
+// MARK: - FloatingChipWindow
+
+/// Persistent bottom-of-screen chip — VoiceFlow's "I'm here" affordance.
+/// Single source of truth for the dictation-state UI; the legacy notch
+/// chip is silenced now that this one shows recording state too.
+///
+/// State machine:
+///   - `.idle`            → tiny black capsule with the wave glyph
+///   - `.recording`       → capsule with live waveform driven by mic level
+///   - `.processing`      → capsule with shimmer (LLM polish in flight)
+///   - `.noInputWarning`  → wide capsule with "Click a textbox to dictate".
+///                          Only fires when fn is pressed AND no text input
+///                          is focused — never a continuous poll.
+///
+/// Hover behavior: in `.idle`, hovering reveals a small gear button on the
+/// right. Click → opens Settings. Other states ignore hover.
+final class FloatingChipModel: ObservableObject {
+    enum ChipState: Equatable { case idle, recording, processing, noInputWarning, permissionsMissing }
+
+    @Published var state: ChipState = .idle
+    /// Live mic amplitude during `.recording`. 0...1, normalized.
+    @Published var audioLevel: Float = 0
+    /// Drives the passive orange-dot indicator on the idle chip. AppDelegate
+    /// sets this from PermissionService state and refreshes on every TCC
+    /// state change. False = at least one required permission is missing.
+    @Published var hasAllPermissions: Bool = true
+}
+
+final class FloatingChipWindow: NSPanel {
+    let model = FloatingChipModel()
+
+    /// Window-level size — large enough to host the warning state at full
+    /// width. Inner SwiftUI shape decides what's actually drawn; window
+    /// stays the same size to avoid resize jank during state transitions.
+    /// 420pt accommodates the longest copy ("Click a textbox and use
+    /// Cmd+V to paste") plus the Tip badge + dismiss button.
+    private static let windowSize = NSSize(width: 420, height: 40)
+
+    init() {
+        super.init(
+            contentRect: NSRect(origin: .zero, size: Self.windowSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
+        self.backgroundColor = .clear
+        self.isOpaque = false
+        // Removed `hasShadow` — was producing the heavy halo effect that
+        // looked off in the warning + recording states. Inner views can
+        // add their own subtle shadows where needed.
+        self.hasShadow = false
+        self.ignoresMouseEvents = false
+        self.isFloatingPanel = true
+        self.hidesOnDeactivate = false
+        self.becomesKeyOnlyIfNeeded = true
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        self.isReleasedWhenClosed = false
+
+        let host = NSHostingView(rootView: FloatingChipView(model: model))
+        host.sizingOptions = []
+        host.frame = NSRect(origin: .zero, size: Self.windowSize)
+        host.autoresizingMask = [.width, .height]
+        self.contentView = host
+        self.setContentSize(Self.windowSize)
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    // MARK: - Public state API (called by AppDelegate)
+
+    func show() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.repositionToBottom()
+            self.alphaValue = 1
+            self.orderFrontRegardless()
+        }
+    }
+
+    func hide() {
+        DispatchQueue.main.async { [weak self] in
+            self?.orderOut(nil)
+        }
+    }
+
+    func setRecording() {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .recording
+            }
+        }
+    }
+
+    func setProcessing() {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .processing
+            }
+        }
+    }
+
+    func setIdle() {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .idle
+                self?.model.audioLevel = 0
+            }
+        }
+    }
+
+    /// Flash the orange permissions warning. Click on it routes to
+    /// onboarding's Permissions step. Auto-dismiss after 5s — same idea
+    /// as flashNoInputWarning, just longer because permissions are a
+    /// deeper task than "click a textbox."
+    func flashPermissionsWarning(durationSeconds: Double = 5.0) {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .permissionsMissing
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds) { [weak self] in
+            guard let self = self else { return }
+            if self.model.state == .permissionsMissing {
+                self.setIdle()
+            }
+        }
+    }
+
+    /// Push permission availability — drives the passive orange-dot
+    /// indicator on the idle chip. Cheap to call repeatedly; only
+    /// republishes when the value actually changes.
+    func setPermissionsAvailable(_ available: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.model.hasAllPermissions != available {
+                self.model.hasAllPermissions = available
+            }
+        }
+    }
+
+    /// Show the no-input warning briefly, then fall back to idle. Does NOT
+    /// block whatever recording flow is happening — purely informational.
+    ///
+    /// On auto-dismiss we post the same DismissChipWarning notification
+    /// the X button uses, so AppDelegate's restore-clipboard logic runs
+    /// in both paths through one observer.
+    func flashNoInputWarning(durationSeconds: Double = 3.0) {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .noInputWarning
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds) { [weak self] in
+            guard let self = self else { return }
+            // Only revert if we're still showing the warning — don't clobber
+            // a recording/processing state that started during the warning.
+            if self.model.state == .noInputWarning {
+                NotificationCenter.default.post(
+                    name: Notification.Name("VoiceFlow.DismissChipWarning"),
+                    object: nil
+                )
+            }
+        }
+    }
+
+    /// Push live audio amplitude (0...1). Safe from any thread.
+    func updateAudioLevel(_ level: Float) {
+        if Thread.isMainThread {
+            model.audioLevel = level
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.model.audioLevel = level
+            }
+        }
+    }
+
+    // MARK: - Positioning
+
+    /// Bottom-center anchored, ~24pt above dock or screen edge.
+    private func repositionToBottom() {
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return }
+        let visible = screen.visibleFrame
+        let size = Self.windowSize
+        let x = visible.midX - size.width / 2
+        let y = visible.minY + 24
+        self.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+    }
+}
+
+/// SwiftUI body for the floating chip. State-driven via FloatingChipModel.
+/// No FocusDetector polling here — the warning state is pushed in by
+/// AppDelegate when fn-press happens without a text-input focus.
+struct FloatingChipView: View {
+    @ObservedObject var model: FloatingChipModel
+    @State private var hovering = false
+
+    var body: some View {
+        HStack {
+            Spacer()
+            chipShape
+                .animation(.easeInOut(duration: 0.18), value: model.state)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var chipShape: some View {
+        switch model.state {
+        case .idle:
+            idleChip
+        case .recording:
+            recordingChip
+        case .processing:
+            processingChip
+        case .noInputWarning:
+            warningChip
+        case .permissionsMissing:
+            permissionsWarningChip
+        }
+    }
+
+    // MARK: Idle — tiny capsule with VoiceFlow logo + hover-revealed gear
+
+    /// Idle layout — Run Log button on the left, main pill centered,
+    /// Settings gear on the right. Both side buttons reveal on hover with
+    /// a spring anchored toward the center pill, so they appear to spring
+    /// OUT of the chip rather than popping into existence.
+    ///
+    /// Symmetry isn't just aesthetic — it puts the main pill at true screen
+    /// center regardless of hover state, since the side buttons are
+    /// equal-weight rendered (opacity-toggled) on both sides.
+    ///
+    /// Hover detection sits on the OUTER HStack with `.contentShape`.
+    /// Side buttons are always rendered so HStack bounds stay stable
+    /// across hover transitions — without this, moving the mouse into
+    /// the gap between pill and a button would unmount it (because
+    /// neither child's onHover would fire), causing flicker.
+    private var idleChip: some View {
+        HStack(spacing: 6) {
+            // Left button — Run Log (clock+arrow icon, matches the sidebar)
+            Button {
+                NotificationCenter.default.post(name: Notification.Name("VoiceFlow.OpenRunLog"), object: nil)
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.black))
+            }
+            .buttonStyle(.plain)
+            .help("Open Run Log")
+            .opacity(hovering ? 1 : 0)
+            .scaleEffect(hovering ? 1 : 0.4, anchor: .trailing)
+            .offset(x: hovering ? 0 : 8)
+            .allowsHitTesting(hovering)
+
+            // Main pill — passive orange dot in the corner when permissions
+            // are missing. When permissions ARE missing, the pill is also
+            // clickable and routes to onboarding (the orange dot becomes a
+            // call-to-action affordance). When permissions are fine, click
+            // is a no-op so the pill doesn't surprise the user.
+            //
+            // Why this matters: Input Monitoring missing means fn never
+            // fires our hotkey listener. The pill click is the user's
+            // only direct path to the fix.
+            Button {
+                if !model.hasAllPermissions {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("VoiceFlow.OpenOnboardingPermissions"),
+                        object: nil
+                    )
+                }
+            } label: {
+                HStack(spacing: 0) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                .frame(width: 58, height: 22)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.black)
+                )
+                .overlay(alignment: .topTrailing) {
+                    if !model.hasAllPermissions {
+                        Circle()
+                            .fill(Theme.accent)
+                            .frame(width: 7, height: 7)
+                            .overlay(
+                                Circle().stroke(Color.black, lineWidth: 1.5)
+                            )
+                            .offset(x: 2, y: -2)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .help(model.hasAllPermissions ? "" : "Click to fix permissions")
+            .animation(.easeInOut(duration: 0.2), value: model.hasAllPermissions)
+
+            // Right button — Settings
+            Button {
+                NotificationCenter.default.post(name: Notification.Name("VoiceFlow.OpenSettings"), object: nil)
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.black))
+            }
+            .buttonStyle(.plain)
+            .help("Open Settings")
+            .opacity(hovering ? 1 : 0)
+            .scaleEffect(hovering ? 1 : 0.4, anchor: .leading)
+            .offset(x: hovering ? 0 : -8)
+            .allowsHitTesting(hovering)
+        }
+        // Stable hover bounds. .contentShape makes the entire HStack
+        // (including gaps and invisible buttons) part of the hit-test
+        // region, so the cursor never falls into "no man's land" and
+        // breaks hover continuity.
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: hovering)
+    }
+
+    // MARK: Recording — pill with live waveform
+
+    private var recordingChip: some View {
+        ChipWaveform(audioLevel: model.audioLevel)
+            .frame(width: 92, height: 22)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.black)
+            )
+    }
+
+    // MARK: Processing — pill with shimmer
+
+    private var processingChip: some View {
+        ChipShimmer()
+            .frame(width: 92, height: 22)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.black)
+            )
+    }
+
+    // MARK: Warning — bigger pill with Tip badge + dismiss button
+
+    /// Shown after a dictation that couldn't be injected into a text
+    /// input. Transcript is already on the clipboard at this point.
+    /// Bigger and more present than the old single-line version — this
+    /// surface is informational and should *read* like a notification,
+    /// not a thin status pill.
+    private var warningChip: some View {
+        HStack(spacing: 10) {
+            // Tip badge — soft purple to differentiate from recording
+            // (waveform) and idle (logo) states.
+            HStack(spacing: 4) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Tip")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(Color(red: 0.85, green: 0.70, blue: 1.0))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(Color.white.opacity(0.14))
+            )
+
+            Text("Click a textbox and use Cmd+V to paste")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+
+            Spacer(minLength: 4)
+
+            // Dismiss — fires the same setIdle path as the auto-timer,
+            // gives the user agency. Wispr Flow has the same pattern.
+            Button {
+                NotificationCenter.default.post(
+                    name: Notification.Name("VoiceFlow.DismissChipWarning"),
+                    object: nil
+                )
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.55))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.black)
+        )
+    }
+
+    // MARK: Permissions warning — orange-tinted, click to open onboarding
+
+    /// Fires when fn is pressed without all required permissions granted.
+    /// Distinguished from the "no input field" warning (purple Tip badge)
+    /// by an orange-tinted shield icon — orange is the universal "needs
+    /// action" color in our palette and matches the passive idle dot.
+    ///
+    /// Entire capsule is clickable (button-shaped). Click → posts
+    /// VoiceFlow.OpenOnboardingPermissions, which AppDelegate routes to
+    /// the Permissions step of the onboarding wizard.
+    private var permissionsWarningChip: some View {
+        Button {
+            NotificationCenter.default.post(
+                name: Notification.Name("VoiceFlow.OpenOnboardingPermissions"),
+                object: nil
+            )
+        } label: {
+            HStack(spacing: 10) {
+                // Action badge — orange instead of purple to read as
+                // "you need to do something" vs informational tip.
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Action")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(Theme.accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(Theme.accent.opacity(0.18))
+                )
+
+                Text("Grant permissions to dictate")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Spacer(minLength: 4)
+
+                // Visual affordance — chevron tells the user "this is
+                // clickable" without needing a separate button.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.55))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.black)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Open onboarding to grant permissions")
+    }
+}
+
+/// Mini waveform used inside the recording-state chip. 7 bars driven by
+/// the same `audioLevel` scalar with static multipliers — same FreeFlow
+/// pattern we use in the (now-silenced) notch overlay, but smaller so
+/// it fits in a 22pt-tall capsule.
+private struct ChipWaveform: View {
+    let audioLevel: Float
+
+    private static let barCount = 7
+    private static let multipliers: [CGFloat] = [0.45, 0.65, 0.85, 1.0, 0.85, 0.65, 0.45]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<Self.barCount, id: \.self) { i in
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: 2, height: barHeight(for: i))
+                    .animation(.spring(response: 0.18, dampingFraction: 0.85), value: audioLevel)
+            }
+        }
+    }
+
+    private func barHeight(for index: Int) -> CGFloat {
+        let level = CGFloat(audioLevel)
+        let minH: CGFloat = 3
+        let maxH: CGFloat = 14
+        let amp = min(level * Self.multipliers[index], 1.0)
+        return minH + (maxH - minH) * amp
+    }
+}
+
+/// Self-driving processing animation. Shows a left-to-right shimmer
+/// across 7 dim bars while waiting for the polish LLM response.
+private struct ChipShimmer: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2) {
+                ForEach(0..<7, id: \.self) { i in
+                    let phase = sin(t * 4.0 - Double(i) * 0.4) * 0.5 + 0.5
+                    Capsule()
+                        .fill(Color.white.opacity(0.35 + phase * 0.5))
+                        .frame(width: 2, height: 8)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - HomeTimelineRow
+
+/// One row in the Home page's date-grouped timeline. Hover-revealed
+/// action cluster (copy + ellipsis menu) sits on the right and only
+/// appears when the row is mouseover'd, keeping the resting state
+/// uncluttered.
+///
+/// Why a separate struct (vs. a `func` builder): per-row hover state.
+/// SwiftUI's `@State` lives per-View-instance; if we built rows from
+/// a parent function, all rows would share one `@State` and only the
+/// last-hovered one would reveal actions.
+struct HomeTimelineRow: View {
+    let summary: RunSummary
+    let runStore: RunStore
+
+    @State private var isHovering = false
+    @State private var showDeleteConfirm = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(DashboardStats.timeOnly(summary.createdAt))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(Theme.textTertiary)
+                .frame(width: 64, alignment: .leading)
+
+            Text(summary.previewText.isEmpty ? "—" : summary.previewText)
+                .font(.system(size: 13))
+                .foregroundColor(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+            // Hover actions — copy + ellipsis menu. Opacity-toggled so
+            // the row layout doesn't jump when actions appear.
+            HStack(spacing: 6) {
+                copyButton
+                ellipsisMenu
+            }
+            .opacity(isHovering ? 1 : 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            // Subtle highlight on hover — gives the row mass when its
+            // actions become interactive.
+            isHovering
+                ? Theme.canvas.opacity(0.6)
+                : Color.clear
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .alert("Delete this transcript?", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                runStore.deleteRun(id: summary.id)
+            }
+        }
+    }
+
+    // MARK: Actions
+
+    private var copyButton: some View {
+        Button {
+            copyTranscript()
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(Theme.textSecondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Copy transcript")
+    }
+
+    private var ellipsisMenu: some View {
+        Menu {
+            Button {
+                NotificationCenter.default.post(
+                    name: Notification.Name("VoiceFlow.RetryRun"),
+                    object: nil,
+                    userInfo: ["runID": summary.id]
+                )
+            } label: {
+                Label("Retry transcript", systemImage: "arrow.clockwise")
+            }
+            .disabled(summary.status == .failed)
+
+            Button {
+                downloadAudio()
+            } label: {
+                Label("Download audio", systemImage: "arrow.down.circle")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                showDeleteConfirm = true
+            } label: {
+                Label("Delete transcript", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Theme.textSecondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    // MARK: Action implementations
+
+    private func copyTranscript() {
+        // Load the full Run to get the un-truncated final text — the
+        // RunSummary index might still hold an older 80-char-capped
+        // value for runs saved before that limit was removed.
+        let full = runStore.loadRun(id: summary.id)?.previewText ?? summary.previewText
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(full, forType: .string)
+    }
+
+    private func downloadAudio() {
+        guard let run = runStore.loadRun(id: summary.id),
+              let sourceURL = runStore.audioURL(for: run) else { return }
+
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let stem = "VoiceFlow_\(formatter.string(from: summary.createdAt))"
+        var dest = downloads.appendingPathComponent("\(stem).wav")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = downloads.appendingPathComponent("\(stem)_\(counter).wav")
+            counter += 1
+        }
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: dest)
+            NSWorkspace.shared.activateFileViewerSelecting([dest])
+        } catch {
+            print("HomeTimelineRow: download failed — \(error)")
+        }
+    }
+}
+
+// MARK: - Theme management
+
+enum ThemeMode: String, CaseIterable {
+    case light, dark
+
+    var icon: String {
+        switch self {
+        case .light: return "sun.max.fill"
+        case .dark:  return "moon.fill"
+        }
+    }
+}
+
+/// Persists + publishes the active theme. SwiftUI views observe `mode`
+/// and the root view applies `.preferredColorScheme(manager.colorScheme)`
+/// so the entire window flips at once. All Theme tokens are dynamic
+/// NSColors that resolve based on the effective appearance — flipping the
+/// scheme paints every surface in one render pass.
+@MainActor
+final class ThemeManager: ObservableObject {
+    static let shared = ThemeManager()
+
+    @Published var mode: ThemeMode {
+        didSet {
+            UserDefaults.standard.set(mode.rawValue, forKey: "theme_mode")
+        }
+    }
+
+    init() {
+        let stored = UserDefaults.standard.string(forKey: "theme_mode") ?? ThemeMode.light.rawValue
+        self.mode = ThemeMode(rawValue: stored) ?? .light
+    }
+
+    var colorScheme: ColorScheme {
+        switch mode {
+        case .light: return .light
+        case .dark:  return .dark
+        }
+    }
+}
+
+/// Compact two-state toggle for the sidebar. Same shape language as the
+/// rest of the chrome — pill background, hover-revealing nothing fancy,
+/// just a clear "this is the active mode" indicator.
+struct ThemeTogglePill: View {
+    @ObservedObject var manager: ThemeManager
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(ThemeMode.allCases, id: \.self) { mode in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        manager.mode = mode
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: mode.icon)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(mode == .light ? "Light" : "Dark")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(manager.mode == mode ? Theme.textPrimary : Theme.textTertiary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(manager.mode == mode ? Theme.surfaceElevated : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                .fill(Theme.divider)
+        )
+    }
+}
+
 // MARK: - SidebarStarBlock
 
 /// Compact GitHub star prompt for the sidebar. Different design from
@@ -1407,28 +2627,24 @@ struct ScratchpadView: View {
     }
 
     private var editor: some View {
-        // ZStack lets the placeholder sit above an empty TextEditor and
-        // disappear once the user types or a transcript lands. SwiftUI's
-        // TextEditor has no native placeholder API — this is the standard
-        // workaround. `.allowsHitTesting(false)` makes sure the placeholder
-        // never eats clicks meant for the editor underneath.
+        // ScratchpadTextView (NSViewRepresentable wrapping NSTextView) lets
+        // us pin the textContainerInset to a known value, which we then
+        // match exactly with the placeholder's padding. SwiftUI's plain
+        // TextEditor doesn't expose textContainerInset, so the cursor
+        // position depends on host OS defaults that we can't anchor to.
         ZStack(alignment: .topLeading) {
-            TextEditor(text: $text)
-                .font(.system(size: 14))
-                .foregroundColor(Theme.textPrimary)
-                .scrollContentBackground(.hidden)
-                .background(Theme.surface)
+            ScratchpadTextView(text: $text)
 
             if text.isEmpty {
-                // Padding values mirror macOS TextEditor's internal
-                // textContainerInset (~5pt horizontal, ~8pt vertical) so
-                // the placeholder sits exactly where typed text will
-                // appear — no visible jump when the user starts typing.
+                // These padding values are the ONLY source of truth for
+                // the placeholder offset. Whatever we set here, the
+                // ScratchpadTextView's textContainerInset must match —
+                // see ScratchpadTextView.placeholderInset.
                 Text("Start dictating with fn from anywhere — or just type here. Your scratchpad auto-fills as transcripts come in.")
                     .font(.system(size: 14))
                     .foregroundColor(Theme.textTertiary)
-                    .padding(.leading, 5)
-                    .padding(.top, 8)
+                    .padding(.leading, ScratchpadTextView.placeholderInset.width)
+                    .padding(.top, ScratchpadTextView.placeholderInset.height)
                     .allowsHitTesting(false)
             }
         }
@@ -1442,5 +2658,72 @@ struct ScratchpadView: View {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .strokeBorder(Theme.divider, lineWidth: 1)
         )
+    }
+}
+
+// MARK: - ScratchpadTextView
+
+/// NSTextView wrapper with a deterministic text origin. Exists because
+/// SwiftUI's `TextEditor` has no API to set `textContainerInset`, which
+/// means the cursor's draw position varies across macOS versions and we
+/// can never make a placeholder line up with it via guesswork.
+///
+/// Single source of truth for the inset: `placeholderInset`. The Scratchpad
+/// view reads this and uses it as `.padding(.leading: ..., .top: ...)` on
+/// the placeholder text, guaranteeing pixel alignment with the cursor.
+struct ScratchpadTextView: NSViewRepresentable {
+    @Binding var text: String
+
+    /// Single source of truth for text origin. Cursor will draw at exactly
+    /// this offset from the editor's frame edge; placeholder uses the same
+    /// values via SwiftUI .padding so they sit on top of each other.
+    static let placeholderInset = CGSize(width: 8, height: 8)
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        let textView = scrollView.documentView as! NSTextView
+        textView.font = NSFont.systemFont(ofSize: 14)
+        textView.textContainerInset = Self.placeholderInset
+        // Line fragment padding is the OTHER hidden-but-real source of
+        // horizontal offset. Zeroing it means the only horizontal offset
+        // is textContainerInset.width — exactly what the placeholder
+        // matches via .padding(.leading:).
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.backgroundColor = .clear
+        textView.drawsBackground = false
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.allowsUndo = true
+        textView.isRichText = false
+        textView.usesFontPanel = false
+        textView.usesRuler = false
+        textView.delegate = context.coordinator
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = true
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        // Only update if it actually changed — otherwise we clobber the
+        // cursor position and selection on every state-change of any
+        // ancestor view.
+        if textView.string != text {
+            textView.string = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: ScratchpadTextView
+        init(_ parent: ScratchpadTextView) { self.parent = parent }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
     }
 }

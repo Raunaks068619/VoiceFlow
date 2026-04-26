@@ -324,6 +324,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var onboardingWindow: NSWindow?
     var mainWindow: NSWindow?
     var recordingOverlay: RecordingOverlayWindow?
+    /// Persistent bottom-of-screen chip — separate from the notch chip.
+    /// The notch chip appears DURING recording; this one is always-on as
+    /// an "I'm here" affordance and morphs to a warning when the focused
+    /// UI element isn't a text input.
+    var floatingChip: FloatingChipWindow?
     var audioRecorder: AudioRecorder?
     var whisperService: WhisperService?
     var textInjector: TextInjector?
@@ -382,6 +387,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // 3s median utterance is a free ~10% latency win.
         whisperService?.prewarmConnections()
         textInjector = TextInjector()
+        // Suppression hook: fires when the transcript can't be injected
+        // (VoiceFlow foreground, no text input focused, etc.). The
+        // transcript is already on the clipboard at this point — we
+        // just flash the warning chip to tell the user where it went
+        // and how to retrieve it.
+        textInjector?.onInjectionSuppressed = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // Suppress the warning chip during onboarding — the test
+                // step intentionally has no text input to inject into,
+                // and the warning would confuse the user (they're doing
+                // exactly what onboarding asked them to do).
+                //
+                // Their transcript still appears in the test step's
+                // "YOUR TRANSCRIPT" card via the RunStore observer.
+                if self.onboardingWindow?.isVisible == true { return }
+
+                self.floatingChip?.flashNoInputWarning(durationSeconds: 4.5)
+            }
+        }
         hotKeyListener = HotKeyListener()
         hotKeyListener?.onKeyDown = { [weak self] in
             self?.handleHotKeyDown()
@@ -412,6 +437,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         permissionService.onPermissionNewlyGranted = { [weak self] pane in
             print("Restarting hotkey listener after \(pane) grant")
             self?.startHotKeyListener()
+            // Newly granted → maybe we now have all required permissions.
+            // Refresh the chip's passive indicator so the orange dot
+            // disappears the moment the user fixes the missing one.
+            self?.refreshChipPermissionState()
         }
 
         let hasCompleted = UserDefaults.standard.bool(forKey: "has_completed_onboarding")
@@ -420,6 +449,100 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // The guided cards inside the window will trigger each system
             // prompt individually when the user clicks "Grant".
             openOnboardingIfNeeded()
+        }
+
+        // Floating chip — always-on bottom-of-screen presence. We install
+        // it from second 1, regardless of onboarding state. Two reasons:
+        //   (a) discoverability — user sees the app exists even before
+        //       finishing setup;
+        //   (b) when fn is pressed without permissions, the chip is the
+        //       surface that tells the user "click here to fix it."
+        // The chip's passive orange dot indicator + permissions-warning
+        // state cover the "not ready yet" UX without hiding the chrome.
+        installFloatingChip()
+        // Initial state push — chip needs to know if it should show
+        // the orange dot at first paint, before any permission change
+        // notification fires.
+        refreshChipPermissionState()
+        // Start the periodic safety-net poll so the orange dot clears
+        // within ~3s of any permission change, regardless of whether
+        // we received an explicit transition event.
+        startPermissionPolling()
+
+        // Notification routing for chip side-buttons. SwiftUI views post
+        // names when their buttons are tapped; AppDelegate is the
+        // single place that knows how to open windows.
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.OpenMainWindow"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.openMainWindow() }
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.OpenSettings"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.openSettings() }
+        // Permissions warning chip click → open onboarding's Permissions
+        // step. We force-open even if the user has already completed
+        // onboarding once, so they can re-walk the permissions flow.
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.OpenOnboardingPermissions"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.openOnboardingIfNeeded(force: true, initialStep: .permissions)
+        }
+        // Floating chip's left button — open the Run Log tab. Same
+        // pattern as openSettings: open main window, then post the
+        // tab-select notification on a tiny delay so window ordering
+        // settles before SwiftUI observes the tab change.
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.OpenRunLog"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.openMainWindow()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                NotificationCenter.default.post(
+                    name: Notification.Name("VoiceFlow.SelectTab"),
+                    object: nil,
+                    userInfo: ["tab": "runLog"]
+                )
+            }
+        }
+        // "Re-run onboarding" — fired from Settings → Setup card. Forces
+        // the wizard window open even though has_completed_onboarding is
+        // already true, so users can revisit any step they need.
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.RestartOnboarding"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.openOnboardingIfNeeded(force: true) }
+        // App regained focus (typically: user came back from System Settings
+        // after granting a permission). Re-poll TCC state so the chip's
+        // orange dot disappears the moment they fixed the missing perm.
+        // Without this, the orange dot would only clear when the user
+        // explicitly triggered a refresh (e.g. clicking the chip).
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.permissionService.refreshStatus()
+            self?.refreshChipPermissionState()
+        }
+        // User clicked X on the warning chip — dismiss immediately
+        // instead of waiting for the auto-revert timer. Also restore
+        // their previous clipboard since the warning's lifetime is the
+        // contract for "transcript is on clipboard, paste now or lose it
+        // back to your old content."
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("VoiceFlow.DismissChipWarning"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.floatingChip?.setIdle()
+            self?.textInjector?.restorePreservedClipboard()
         }
         // Returning users: stay menu-bar only. Window is reachable via Dock
         // icon click (applicationShouldHandleReopen) or menu bar → Open
@@ -445,6 +568,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         if UserDefaults.standard.object(forKey: "noise_gate_threshold") == nil {
             UserDefaults.standard.set(0.008, forKey: "noise_gate_threshold")
+        }
+        // Realtime streaming default ON. The biggest single perceived-latency
+        // win we can ship: instead of waiting for Fn-release → upload WAV →
+        // transcribe (sequential), we stream PCM16 to OpenAI's Realtime API
+        // *while the user speaks*, so by the time Fn is released the
+        // transcription is ~80% done. Saves ~350ms per dictation on a typical
+        // 5-second utterance. The batch path remains as a safety net — if
+        // the WebSocket drops mid-utterance, RealtimeTranscriptionService
+        // falls back to the batch upload automatically.
+        //
+        // Why default ON now (was OFF): the flag was conservative when the
+        // realtime path was new. It's been stable for weeks and is the
+        // single biggest reason FreeFlow felt faster than us in head-to-head.
+        // Works for BOTH providers — Groq exposes the same OpenAI-Realtime
+        // protocol on wss://api.groq.com/openai/v1/realtime, so users on
+        // Groq keys also get the streaming win (running through their faster
+        // whisper-large-v3-turbo model — what FreeFlow uses).
+        if UserDefaults.standard.object(forKey: Self.realtimeStreamingKey) == nil {
+            UserDefaults.standard.set(true, forKey: Self.realtimeStreamingKey)
         }
     }
 
@@ -482,6 +624,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Spawn the persistent floating chip window. Idempotent — safe to
+    /// call multiple times.
+    func installFloatingChip() {
+        if floatingChip == nil {
+            floatingChip = FloatingChipWindow()
+        }
+        floatingChip?.show()
+    }
+
+    /// Sync the chip's passive permission indicator with the current TCC
+    /// state. Called on app launch, on app re-activation, and after any
+    /// permission change. We refreshStatus FIRST so we don't read a stale
+    /// @Published value (TCC grants from System Settings can lag our
+    /// cached state by ~100ms). Then we schedule a delayed re-check to
+    /// catch the race where TCC has flipped but our cache missed it on
+    /// the first read.
+    func refreshChipPermissionState() {
+        permissionService.refreshStatus()
+        let allGranted = permissionService.allRequiredGranted
+        floatingChip?.setPermissionsAvailable(allGranted)
+
+        // Belt-and-suspenders: re-check after 0.6s. TCC sometimes lags
+        // refreshStatus; a single poll right after grant can read stale.
+        // Cheap call, no perceptible cost.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self = self else { return }
+            self.permissionService.refreshStatus()
+            let recheck = self.permissionService.allRequiredGranted
+            self.floatingChip?.setPermissionsAvailable(recheck)
+        }
+    }
+
+    /// Periodic safety-net poll for the chip's permission indicator.
+    /// Catches edge cases where neither onPermissionNewlyGranted nor
+    /// didBecomeActive fired (e.g. user granted in System Settings and
+    /// switched to a third-party app, then back to ours via cmd-tab —
+    /// didBecomeActive fires in some macOS versions but not all).
+    /// 3-second cadence is invisible to the user and costs ~one AX call
+    /// per check.
+    private var permissionPollTimer: Timer?
+    func startPermissionPolling() {
+        stopPermissionPolling()
+        permissionPollTimer = Timer.scheduledTimer(
+            withTimeInterval: 3.0,
+            repeats: true
+        ) { [weak self] _ in
+            self?.refreshChipPermissionState()
+        }
+    }
+    func stopPermissionPolling() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
+    }
+
     func openMainWindow() {
 
         if mainWindow == nil {
@@ -511,13 +707,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             mainWindow = NSWindow(contentViewController: hostingController)
             mainWindow?.title = "VoiceFlow"
             mainWindow?.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            // Generous default — Wispr-Flow-shape proportions. The
-            // dashboard's content (hero + stats row, full timeline, sidebar)
-            // breathes much better at ~1100×780 than the cramped 720×620 it
-            // used to open at. Window is .resizable so users can shrink if
-            // needed.
-            mainWindow?.setContentSize(NSSize(width: 1100, height: 780))
+
+            // First-launch default. We compute against the visible screen so
+            // small displays don't get a window that overflows their bounds —
+            // 90% cap leaves room for the dock and menu bar to coexist.
+            //
+            // After this, `setFrameAutosaveName` takes over: AppKit persists
+            // user-driven resizes and positions to UserDefaults under the
+            // given name, and restores them on subsequent launches. So this
+            // size only applies to a truly fresh install — past that point,
+            // the window remembers whatever the user last set.
+            let target = NSSize(width: 1280, height: 860)
+            if let screen = NSScreen.main {
+                let visible = screen.visibleFrame.size
+                let safeWidth  = min(target.width,  visible.width  * 0.9)
+                let safeHeight = min(target.height, visible.height * 0.9)
+                mainWindow?.setContentSize(NSSize(width: safeWidth, height: safeHeight))
+            } else {
+                mainWindow?.setContentSize(target)
+            }
             mainWindow?.center()
+            // Persist + restore user-driven resizes. Has to come AFTER the
+            // initial setContentSize so our default is what shows on first
+            // launch — `setFrameAutosaveName` only overrides if a saved
+            // frame exists for this name in UserDefaults.
+            mainWindow?.setFrameAutosaveName("VoiceFlowMainWindow")
+
             mainWindow?.isReleasedWhenClosed = false
         }
 
@@ -525,31 +740,53 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
     
+    /// Open the main window with the Settings tab pre-selected.
+    ///
+    /// Was: a separate popup NSWindow hosting the legacy `SettingsView`.
+    /// That created a SECOND settings UI duplicating everything in the main
+    /// dashboard's Settings tab — same fields, different visual treatment,
+    /// guaranteed drift over time. Now everything lives in one surface.
+    ///
+    /// Tab selection happens via NotificationCenter (`VoiceFlow.SelectTab`)
+    /// rather than mutating a shared store — keeps MainDashboardView's
+    /// state self-contained, just adds a listener at the body level.
     func openSettings() {
-        if settingsWindow == nil {
-            let settingsView = SettingsView(permissionService: permissionService)
-            let hostingController = NSHostingController(rootView: settingsView)
-            
-            settingsWindow = NSWindow(contentViewController: hostingController)
-            settingsWindow?.title = "VoiceFlow Settings"
-            settingsWindow?.styleMask = [.titled, .closable]
-            settingsWindow?.setContentSize(NSSize(width: 460, height: 500))
-            settingsWindow?.center()
+        openMainWindow()
+        // Slight delay — NSWindow ordering needs to settle before SwiftUI
+        // observes the notification, otherwise the tab switch can race
+        // with the window's first render.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            NotificationCenter.default.post(
+                name: Notification.Name("VoiceFlow.SelectTab"),
+                object: nil,
+                userInfo: ["tab": "settings"]
+            )
         }
-        
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
-    func openOnboardingIfNeeded(force: Bool = false) {
+    /// Opens the onboarding wizard. `force` ignores the
+    /// has_completed_onboarding flag (used for "Re-run onboarding" + the
+    /// chip's permissions warning click). `initialStep` deep-links to a
+    /// specific wizard step — the permissions-warning chip uses this to
+    /// jump straight to the Permissions screen instead of forcing the
+    /// user to click through Welcome.
+    func openOnboardingIfNeeded(force: Bool = false, initialStep: OnboardingStep = .welcome) {
         let hasCompleted = UserDefaults.standard.bool(forKey: "has_completed_onboarding")
         if !force && hasCompleted {
             return
         }
 
+        // Always rebuild when force-opening with a specific step — the
+        // existing window's coordinator might be on a different step.
+        if onboardingWindow != nil && force {
+            onboardingWindow?.close()
+            onboardingWindow = nil
+        }
+
         if onboardingWindow == nil {
             let onboardingView = OnboardingView(
                 permissionService: permissionService,
+                initialStep: initialStep,
                 onOpenSettings: { [weak self] in
                     self?.openSettings()
                 },
@@ -557,6 +794,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     UserDefaults.standard.set(true, forKey: "has_completed_onboarding")
                     self?.onboardingWindow?.close()
                     self?.onboardingWindow = nil
+                    // Chip is now installed from app launch — no longer
+                    // need to lazy-init here. installFloatingChip is
+                    // idempotent so calling again is harmless, but we
+                    // do refresh permission state since the user just
+                    // walked through the permissions step.
+                    self?.installFloatingChip()
+                    self?.refreshChipPermissionState()
                 }
             )
             let hostingController = NSHostingController(rootView: onboardingView)
@@ -669,7 +913,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 return
             }
 
+            // Hard gate: ALL required permissions must be granted, not just
+            // mic. If accessibility or input monitoring is missing, the
+            // post-transcribe injection will fail anyway — surface that
+            // upfront with one chip warning instead of letting the user
+            // record into the void.
+            //
+            // Note: input monitoring being missing is mostly hypothetical
+            // here, because if it were missing we wouldn't have received
+            // the fn-press at all. Checking it anyway covers the edge
+            // case where it was just revoked between key events.
+            let perms = self.permissionService
+            if !perms.accessibilityState.isGranted ||
+               !perms.inputMonitoringState.isGranted {
+                print("Aborting recording: required permissions missing")
+                self.isRecording = false
+                self.floatingChip?.flashPermissionsWarning()
+                return
+            }
+
             // From here down, mic is granted. Everything else is best-effort.
+            //
+            // Soft gate (no upfront focus check): always record. AX-based
+            // role detection produces too many false negatives — apps like
+            // VS Code, iTerm, and various Electron tools sometimes expose
+            // their text input as AXScrollArea or AXGroup instead of
+            // AXTextArea. Blocking those would be hostile.
+            //
+            // Instead the focus check happens AT INJECTION TIME inside
+            // TextInjector. If injection can't land in a real text input,
+            // the transcript still goes to the clipboard and the warning
+            // chip flashes with paste instructions.
             self.showRecordingOverlay()
             // Spin up realtime streaming BEFORE starting the tap so the
             // PCM16 callback is already set. If the flag is off, skip
@@ -695,7 +969,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func stopRecording() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.recordingOverlay?.setState(.processing)
+            // Recording stopped, polish/transcription in flight → processing.
+            // The floating chip stays in this state until handleResult
+            // completes (success or failure), which calls hideRecordingOverlay
+            // → setIdle.
+            self.floatingChip?.setProcessing()
 
             // Begin a RunLog session to accumulate pipeline data.
             let session = self.runRecorder.beginRun()
@@ -847,19 +1125,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         guard UserDefaults.standard.bool(forKey: Self.realtimeStreamingKey) else { return }
 
-        // Streaming only makes sense with OpenAI — Groq's Realtime endpoint
-        // has a different shape and we don't support it yet. Silently skip
-        // for other providers; batch path will handle the recording fine.
-        guard TranscriptionProvider.current == .openai else { return }
-
-        let apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
-        guard !apiKey.isEmpty else { return }
-
+        // Both OpenAI and Groq expose the OpenAI-Realtime WebSocket
+        // protocol — same message shape, same intent=transcription, same
+        // input_audio_buffer events. Different host + different model.
+        // FreeFlow's "fast on a Groq key" experience comes from this exact
+        // path running against whisper-large-v3-turbo on Groq's stack.
+        let provider = TranscriptionProvider.current
         let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
-        let config = RealtimeTranscriptionService.Configuration.openAI(
-            apiKey: apiKey,
-            language: language == "auto" ? "" : language
-        )
+        let normalizedLanguage = language == "auto" ? "" : language
+
+        let config: RealtimeTranscriptionService.Configuration
+        switch provider {
+        case .openai:
+            let apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
+            guard !apiKey.isEmpty else { return }
+            config = .openAI(apiKey: apiKey, language: normalizedLanguage)
+        case .groq:
+            // User-provided key wins; falls back to embedded beta key
+            // so the free-tier path "just works" out of the box.
+            let userKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
+            let apiKey = userKey.isEmpty ? EmbeddedKeys.groq : userKey
+            guard !apiKey.isEmpty else { return }
+            config = .groq(apiKey: apiKey, language: normalizedLanguage)
+        }
         let stream = RealtimeTranscriptionService(config: config)
         realtimeStream = stream
         realtimeStreamStart = CFAbsoluteTimeGetCurrent()
@@ -889,24 +1177,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Recording-state UI lives in the bottom floating chip. The notch
+    /// chip (`recordingOverlay`) is silenced — bottom chip is the only
+    /// indicator. Focus check happens UPSTREAM in `startRecording`; by
+    /// the time this runs, we've already gated and confirmed a text
+    /// input exists.
+    let focusDetector = FocusDetector()
+
     private func showRecordingOverlay() {
-        if recordingOverlay == nil {
-            recordingOverlay = RecordingOverlayWindow()
-        }
-        recordingOverlay?.show(state: .recording)
-        // Wire live audio amplitude → overlay waveform. We capture the
-        // overlay weakly so the audio recorder can outlive the panel
-        // without keeping it pinned in memory. Cleared in hideRecordingOverlay.
-        audioRecorder?.onAmplitude = { [weak overlay = recordingOverlay] level in
-            overlay?.updateAudioLevel(level)
+        floatingChip?.setRecording()
+        audioRecorder?.onAmplitude = { [weak chip = floatingChip] level in
+            chip?.updateAudioLevel(level)
         }
     }
 
     private func hideRecordingOverlay() {
-        // Drop the amplitude callback BEFORE hiding so trailing buffers
-        // from the engine teardown don't try to update a panel that's
-        // already animating off-screen.
         audioRecorder?.onAmplitude = nil
-        recordingOverlay?.hide()
+        // Pipeline complete → back to idle. setProcessing() is called
+        // separately at the moment fn is released (stopRecording).
+        floatingChip?.setIdle()
     }
 }
