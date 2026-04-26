@@ -14,26 +14,25 @@ enum RecordingOverlayState: Equatable {
 ///
 /// Implementation notes:
 /// - Uses `NSPanel` (not `NSWindow`) so `.nonactivatingPanel` is legal.
-/// - `NSHostingView.sizingOptions = []` prevents SwiftUI ↔ AppKit layout
-///   feedback loops on macOS 14+ (the panel size is driven by AppKit only).
-/// - `level = .screenSaver` ensures visibility above fullscreen apps,
-///   screen sharing overlays, and video players (same as FreeFlow).
+/// - Window level: `CGWindowLevelForKey(.statusWindow) + 2`. We avoid
+///   `.screenSaver` because macOS 26 (Tahoe) silently filters that level
+///   for non-screen-recording apps, which causes the chip to render
+///   _below_ the menu bar (invisible). `.statusWindow + 2` always sits
+///   above the menu bar and is permitted for any app.
 /// - Slide-in animation uses a custom cubic bezier with spring overshoot.
 final class RecordingOverlayWindow: NSPanel {
-    private let model = RecordingOverlayModel()
-    private let overlaySize = NSSize(width: 190, height: 34)
+    let model = RecordingOverlayModel()
+    private let overlaySize = NSSize(width: 160, height: 38)
 
     init() {
         super.init(
-            contentRect: NSRect(origin: .zero, size: NSSize(width: 190, height: 34)),
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 160, height: 38)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
 
-        // .screenSaver: renders above everything including fullscreen apps.
-        // This is what FreeFlow uses — guarantees the chip is always visible.
-        self.level = .screenSaver
+        self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
         self.backgroundColor = .clear
         self.isOpaque = false
         self.hasShadow = true
@@ -41,7 +40,8 @@ final class RecordingOverlayWindow: NSPanel {
         self.isFloatingPanel = true
         self.hidesOnDeactivate = false
         self.becomesKeyOnlyIfNeeded = true
-        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        self.isReleasedWhenClosed = false
 
         let hosting = NSHostingView(rootView: RecordingOverlayView(model: model))
         hosting.sizingOptions = []
@@ -55,24 +55,33 @@ final class RecordingOverlayWindow: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    /// The final resting position: centered horizontally, 2pt below screen top.
+    /// Final resting position: centered horizontally, sitting just below the
+    /// menu bar (and notch on notched MacBooks).
+    ///
+    /// We anchor to `visibleFrame.maxY` rather than `frame.maxY`. On notched
+    /// MacBooks, `frame.maxY` is the absolute top of the display panel —
+    /// which is the camera notch hole. Positioning content there gets the
+    /// middle of the chip clipped by the notch hardware. `visibleFrame.maxY`
+    /// already accounts for both the menu bar AND the notch overlap, so
+    /// anchoring there guarantees the chip sits in usable screen real estate.
+    ///
+    /// Gap: 4pt of breathing room below the menu bar so the chip doesn't
+    /// look fused to it.
     private func finalFrame(on screen: NSScreen) -> NSRect {
         let x = screen.frame.midX - overlaySize.width / 2
-        let y = screen.frame.maxY - overlaySize.height - 2
+        let topAvailable = screen.visibleFrame.maxY
+        let y = topAvailable - overlaySize.height - 4
         return NSRect(origin: NSPoint(x: x, y: y), size: overlaySize)
     }
 
     /// Shows the chip with a FreeFlow-style slide-in from above.
-    ///
-    /// The animation uses a custom cubic bezier (0.34, 1.56, 0.64, 1.0)
-    /// that overshoots the final position and settles back — creating a
-    /// satisfying "drop into place" spring effect in just 180ms.
     func show(state: RecordingOverlayState = .recording) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
             let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
                 ?? NSScreen.main
+                ?? NSScreen.screens.first
             guard let screen else { return }
 
             let final = self.finalFrame(on: screen)
@@ -86,12 +95,13 @@ final class RecordingOverlayWindow: NSPanel {
             )
 
             self.model.state = state
+            self.model.audioLevel = 0
             self.setFrame(hidden, display: true)
             self.alphaValue = 1
             self.orderFrontRegardless()
+            // Re-assert level — some macOS versions reset it on space-join.
+            self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
 
-            // Spring overshoot bezier: overshoots then settles.
-            // Control point y=1.56 > 1.0 is what creates the overshoot.
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.18
                 ctx.timingFunction = CAMediaTimingFunction(
@@ -108,6 +118,17 @@ final class RecordingOverlayWindow: NSPanel {
         }
     }
 
+    /// Push a live amplitude sample (0...1). Safe to call from any thread.
+    func updateAudioLevel(_ level: Float) {
+        if Thread.isMainThread {
+            model.audioLevel = level
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.model.audioLevel = level
+            }
+        }
+    }
+
     /// Hides with a quick slide-up + fade combo.
     func hide() {
         DispatchQueue.main.async { [weak self] in
@@ -120,7 +141,6 @@ final class RecordingOverlayWindow: NSPanel {
                 ctx.duration = 0.15
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 self.animator().alphaValue = 0.0
-                // Slide back up while fading.
                 if let screen {
                     let upFrame = NSRect(
                         x: self.frame.origin.x,
@@ -132,13 +152,20 @@ final class RecordingOverlayWindow: NSPanel {
                 }
             }, completionHandler: { [weak self] in
                 self?.orderOut(nil)
+                self?.model.audioLevel = 0
             })
         }
     }
 }
 
+/// View-model for the overlay.
+///
+/// Single `audioLevel: Float` (0...1) — the WaveformView derives all 9 bar
+/// heights from this one value via static multipliers. Same pattern as
+/// FreeFlow: cheaper to publish, cleaner to animate, no array churn.
 final class RecordingOverlayModel: ObservableObject {
     @Published var state: RecordingOverlayState = .recording
+    @Published var audioLevel: Float = 0
 }
 
 struct RecordingOverlayView: View {
@@ -158,9 +185,7 @@ struct RecordingOverlayView: View {
             content
                 .padding(.horizontal, 14)
         }
-        .frame(width: 190, height: 34)
-        // Spring transition between recording ↔ processing states.
-        // Same parameters as FreeFlow: snappy response with minimal ringing.
+        .frame(width: 160, height: 38)
         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: model.state)
     }
 
@@ -168,80 +193,109 @@ struct RecordingOverlayView: View {
     private var content: some View {
         switch model.state {
         case .recording:
-            WaveformIndicator()
+            WaveformView(audioLevel: model.audioLevel)
         case .processing:
-            PulsingDotsIndicator()
+            ProcessingWaveformView()
         }
     }
 }
 
-// MARK: - Waveform (recording state)
+// MARK: - Waveform views (FreeFlow pattern)
 
-/// 7-bar animated waveform. Each bar oscillates on a staggered sine wave,
-/// creating a "live mic listening" visual without needing real audio levels.
+/// Single bar of the live waveform. Maps an amplitude (0...1) to a height
+/// between `minHeight` and `maxHeight`. Always renders at least `minHeight`
+/// so an idle waveform reads as a flat line of pills, not invisible.
+private struct WaveformBar: View {
+    let amplitude: CGFloat
+
+    private let minHeight: CGFloat = 3
+    private let maxHeight: CGFloat = 22
+
+    var body: some View {
+        Capsule()
+            .fill(Color.white)
+            .frame(width: 3, height: minHeight + (maxHeight - minHeight) * amplitude)
+    }
+}
+
+/// 9-bar live waveform driven by a single audioLevel scalar.
 ///
-/// Timer lifecycle: uses `onAppear`/`onDisappear` so the 50ms timer only
-/// runs while the view is actually on-screen.
-private struct WaveformIndicator: View {
-    @State private var phase: Double = 0
-    @State private var timerCancellable: Timer? = nil
-    private let barCount = 7
+/// Pattern lifted from FreeFlow:
+/// - Static multipliers [0.35 ... 1.0 ... 0.35] give the wave its shape.
+///   The center bar always reaches highest, edges stay shorter — creates
+///   the classic "voice level meter" look without per-bar audio analysis.
+/// - Per-bar spring response widens slightly toward the edges, plus a
+///   tiny per-bar delay scaled by distance from center. Effect: the
+///   center pulses first, the wave "ripples" outward.
+/// - Animation key = audioLevel (single scalar). SwiftUI re-evaluates
+///   the body on every change, but the animation engine batches the
+///   per-bar springs cleanly.
+private struct WaveformView: View {
+    let audioLevel: Float
+
+    private static let barCount = 9
+    private static let multipliers: [CGFloat] = [0.35, 0.55, 0.75, 0.9, 1.0, 0.9, 0.75, 0.55, 0.35]
+    private static let centerIndex = CGFloat((barCount - 1) / 2)
 
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<barCount, id: \.self) { i in
-                Capsule()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: 2.5, height: barHeight(for: i))
+        HStack(spacing: 2.5) {
+            ForEach(0..<Self.barCount, id: \.self) { index in
+                WaveformBar(amplitude: barAmplitude(for: index))
+                    .animation(
+                        .spring(
+                            response: barResponse(for: index),
+                            dampingFraction: 0.88
+                        )
+                        .delay(barDelay(for: index)),
+                        value: audioLevel
+                    )
             }
         }
         .frame(maxWidth: .infinity)
-        .onAppear {
-            timerCancellable = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-                phase += 0.18
-            }
-        }
-        .onDisappear {
-            timerCancellable?.invalidate()
-            timerCancellable = nil
-        }
     }
 
-    private func barHeight(for index: Int) -> CGFloat {
-        let offset = Double(index) * 0.55
-        let wave = sin(phase + offset)
-        return CGFloat(6 + (wave + 1) * 6)
+    private func barAmplitude(for index: Int) -> CGFloat {
+        let level = CGFloat(audioLevel)
+        return min(level * Self.multipliers[index], 1.0)
+    }
+
+    private func barResponse(for index: Int) -> Double {
+        let distance = abs(CGFloat(index) - Self.centerIndex)
+        let normalizedDistance = distance / Self.centerIndex
+        return 0.18 + Double(normalizedDistance) * 0.06
+    }
+
+    private func barDelay(for index: Int) -> Double {
+        let distance = abs(CGFloat(index) - Self.centerIndex)
+        return Double(distance) * 0.01
     }
 }
 
-// MARK: - Pulsing dots (processing state)
-
-/// Three dots that fade in/out in staggered sequence. Matches the
-/// "…" loading affordance used in iMessage / Apple Intelligence.
-private struct PulsingDotsIndicator: View {
-    @State private var tick: Int = 0
-    @State private var timerRef: Timer? = nil
+/// Self-driven shimmer for the processing/transcribing phase. Same 9-bar
+/// shape, but heights driven by paired sine waves on a TimelineView so
+/// the chip looks "alive" while we wait for STT + polish.
+private struct ProcessingWaveformView: View {
+    private static let barCount = 9
+    private static let multipliers: [CGFloat] = [0.42, 0.58, 0.76, 0.9, 1.0, 0.9, 0.76, 0.58, 0.42]
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 5, height: 5)
-                    .opacity(i == (tick % 3) ? 1.0 : 0.3)
-                    .scaleEffect(i == (tick % 3) ? 1.15 : 0.9)
-                    .animation(.easeInOut(duration: 0.25), value: tick)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+
+            HStack(spacing: 2.5) {
+                ForEach(0..<Self.barCount, id: \.self) { index in
+                    let wave = 0.5 + 0.5 * sin((time * 5.6) - Double(index) * 0.5)
+                    let shimmer = 0.5 + 0.5 * sin((time * 2.8) + Double(index) * 0.75)
+                    let amplitude = min(
+                        0.16 + CGFloat(wave) * Self.multipliers[index] * 0.52 + CGFloat(shimmer) * 0.08,
+                        1.0
+                    )
+
+                    WaveformBar(amplitude: amplitude)
+                        .opacity(0.45 + CGFloat(wave) * 0.5)
+                }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .onAppear {
-            timerRef = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
-                tick &+= 1
-            }
-        }
-        .onDisappear {
-            timerRef?.invalidate()
-            timerRef = nil
+            .frame(maxWidth: .infinity)
         }
     }
 }

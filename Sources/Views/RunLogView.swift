@@ -2,7 +2,12 @@ import SwiftUI
 import AVFoundation
 
 /// Run Log tab — chronological history of dictation runs with full pipeline
-/// transparency. Inspired by FreeFlow's Run Log.
+/// transparency. Each row collapses by default; expanding reveals the
+/// audio + transcription + post-processing breakdown.
+///
+/// Visual treatment matches the Home dashboard: cream canvas, soft cards,
+/// no stark black surfaces. Code blocks are tinted-cream (not dark
+/// terminal-style) so they sit naturally inside the warm palette.
 struct RunLogView: View {
     @ObservedObject var runStore: RunStore
     @State private var selectedRunID: UUID?
@@ -11,7 +16,6 @@ struct RunLogView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
 
             if runStore.summaries.isEmpty {
                 emptyState
@@ -19,24 +23,36 @@ struct RunLogView: View {
                 runList
             }
         }
+        .background(Theme.canvas)
     }
 
     // MARK: - Header
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Run Log")
-                    .font(.title3.bold())
-                Text("Stored locally. Only the \(runStore.maxRuns) most recent runs are kept.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 26, weight: .semibold, design: .serif))
+                    .foregroundColor(Theme.textPrimary)
+                Text(retentionCaption)
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.textSecondary)
             }
             Spacer()
-            Button("Clear History") {
+            Button {
                 showClearConfirm = true
+            } label: {
+                Text("Clear history")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(runStore.summaries.isEmpty ? Theme.textTertiary : .white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                            .fill(runStore.summaries.isEmpty ? Theme.divider : Theme.danger)
+                    )
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.plain)
             .disabled(runStore.summaries.isEmpty)
             .alert("Clear all run history?", isPresented: $showClearConfirm) {
                 Button("Cancel", role: .cancel) {}
@@ -48,24 +64,37 @@ struct RunLogView: View {
                 Text("This will delete all saved audio and transcripts. This cannot be undone.")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, Theme.Space.xl)
+        .padding(.top, Theme.Space.xl)
+        .padding(.bottom, Theme.Space.lg)
+    }
+
+    /// Caption explaining current retention. `runStore.maxRuns` is `Int?`:
+    /// nil → unlimited, otherwise → ring-buffer cap. We branch the copy
+    /// instead of force-unwrapping because the unlimited case is real.
+    private var retentionCaption: String {
+        if let cap = runStore.maxRuns {
+            return "Stored locally. Only the \(cap) most recent runs are kept."
+        }
+        return "Stored locally. No cap — history grows until you clear it."
     }
 
     // MARK: - Empty state
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             Spacer()
             Image(systemName: "waveform.path")
-                .font(.system(size: 40))
-                .foregroundColor(.secondary.opacity(0.5))
+                .font(.system(size: 36))
+                .foregroundColor(Theme.textTertiary)
             Text("No runs yet")
-                .font(.headline)
-                .foregroundColor(.secondary)
-            Text("Hold Fn to start dictating. Each run will appear here.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+            Text("Hold fn anywhere to start dictating. Each run will appear here with its full pipeline trace.")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -75,7 +104,7 @@ struct RunLogView: View {
 
     private var runList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: Theme.Space.sm) {
                 ForEach(runStore.summaries) { summary in
                     RunRowView(
                         summary: summary,
@@ -93,8 +122,8 @@ struct RunLogView: View {
                     )
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, Theme.Space.xl)
+            .padding(.bottom, Theme.Space.xl)
         }
     }
 }
@@ -111,45 +140,47 @@ struct RunRowView: View {
 
     private var statusColor: Color {
         switch summary.status {
-        case .success: return .green
-        case .failed: return .red
-        case .noSpeech: return .orange
+        case .success:  return Theme.success
+        case .failed:   return Theme.danger
+        case .noSpeech: return Theme.warning
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Row header — always visible
-            HStack(spacing: 10) {
-                // Status indicator
-                RoundedRectangle(cornerRadius: 2)
+            // Header row — always visible
+            HStack(spacing: 12) {
+                // Status pill — tiny vertical bar in the status color
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(statusColor)
-                    .frame(width: 4, height: 36)
+                    .frame(width: 3, height: 36)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(formattedDate(summary.createdAt))
-                        .font(.subheadline.bold())
-                    Text(summary.previewText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text(summary.previewText.isEmpty ? "—" : summary.previewText)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
                         .lineLimit(1)
                 }
 
                 Spacer()
 
                 Text(formattedDuration(summary.durationSeconds))
-                    .font(.caption.monospacedDigit())
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(Theme.textTertiary)
 
-                Button(action: onToggle) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.textTertiary)
 
-                Button(action: { showDeleteConfirm = true }) {
+                Button {
+                    showDeleteConfirm = true
+                } label: {
                     Image(systemName: "trash")
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textTertiary)
                 }
                 .buttonStyle(.plain)
                 .alert("Delete this run?", isPresented: $showDeleteConfirm) {
@@ -159,29 +190,29 @@ struct RunRowView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onToggle() }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
 
             // Expanded detail
             if isExpanded {
-                Divider().padding(.horizontal, 12)
+                Divider().background(Theme.divider).padding(.horizontal, 16)
                 RunDetailView(runID: summary.id, runStore: runStore)
-                    .padding(12)
+                    .padding(16)
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(NSColor.controlBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(statusColor.opacity(summary.status == .failed ? 0.4 : 0.1), lineWidth: 1)
-                )
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(Theme.divider, lineWidth: 1)
         )
     }
 
     private func formattedDate(_ date: Date) -> String {
         let f = DateFormatter()
-        f.dateFormat = "d/M/yyyy, h:mm:ss a"
+        f.dateFormat = "d MMM yyyy, h:mm a"
         return f.string(from: date)
     }
 
@@ -208,7 +239,9 @@ struct RunDetailView: View {
             if let run = run {
                 detailContent(run)
             } else {
-                ProgressView("Loading...")
+                ProgressView("Loading…")
+                    .controlSize(.small)
+                    .tint(Theme.accent)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
@@ -219,10 +252,10 @@ struct RunDetailView: View {
 
     @ViewBuilder
     private func detailContent(_ run: Run) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             // Stage 1: Audio Capture
             pipelineStage(number: 1, title: "Audio Capture") {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     audioPlayerRow(run)
 
                     HStack(spacing: 16) {
@@ -237,13 +270,14 @@ struct RunDetailView: View {
             // Stage 2: Transcription
             if let transcription = run.transcription {
                 pipelineStage(number: 2, title: "Transcribe Audio") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 6) {
                             Text("Sent audio to")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.textSecondary)
                             Text(transcription.provider)
-                                .font(.caption.bold())
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(Theme.textPrimary)
                         }
 
                         metaLabel("Latency", value: "\(transcription.latencyMs)ms")
@@ -256,12 +290,12 @@ struct RunDetailView: View {
             // Stage 3: Post-processing
             if let post = run.postProcessing {
                 pipelineStage(number: 3, title: "Post-Process") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 12) {
-                            capsule(post.mode, color: .blue)
-                            capsule(post.style, color: .purple)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 6) {
+                            chip(post.mode, color: Theme.accent)
+                            chip(post.style, color: Color(red: 0.580, green: 0.345, blue: 0.722))
                             if post.droppedLanguageGuardTriggered {
-                                capsule("guard triggered", color: .orange)
+                                chip("guard triggered", color: Theme.warning)
                             }
                         }
 
@@ -276,13 +310,15 @@ struct RunDetailView: View {
                                 isExpanded: $showPostProcessPrompt,
                                 content: {
                                     codeBlock(post.prompt)
+                                        .padding(.top, 6)
                                 },
                                 label: {
-                                    Text("Show Prompt")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.accentColor)
+                                    Text("Show prompt")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(Theme.accent)
                                 }
                             )
+                            .tint(Theme.accent)
                         }
 
                         codeBlock(post.finalText.isEmpty ? "(empty — filtered)" : post.finalText)
@@ -299,23 +335,21 @@ struct RunDetailView: View {
         HStack(spacing: 12) {
             Button(action: togglePlayback) {
                 Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(.accentColor)
+                    .font(.system(size: 26))
+                    .foregroundColor(Theme.accent)
             }
             .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 2) {
-                // Simple duration display (no scrubber in MVP)
-                Text(formatDuration(audioPlayer?.duration ?? 0))
-                    .font(.caption.monospacedDigit())
-                    .foregroundColor(.secondary)
-            }
+            Text(formatDuration(audioPlayer?.duration ?? 0))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(Theme.textSecondary)
 
             Spacer()
 
             Button(action: { copyToClipboard(run) }) {
                 Image(systemName: "doc.on.doc")
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textTertiary)
             }
             .buttonStyle(.plain)
             .help("Copy final text to clipboard")
@@ -342,7 +376,8 @@ struct RunDetailView: View {
         } else {
             player.play()
             isPlaying = true
-            // Auto-reset when done
+            // Auto-reset when done. Polling is crude but sufficient for the
+            // <2min audio clips we deal with — no need for a delegate dance.
             DispatchQueue.global().async {
                 while player.isPlaying { Thread.sleep(forTimeInterval: 0.1) }
                 DispatchQueue.main.async { isPlaying = false }
@@ -370,18 +405,19 @@ struct RunDetailView: View {
         title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
                 Text("\(number)")
-                    .font(.caption2.bold())
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white)
                     .frame(width: 20, height: 20)
-                    .background(Circle().fill(Color.accentColor))
+                    .background(Circle().fill(Theme.accent))
                 Text(title)
-                    .font(.subheadline.bold())
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
             }
             content()
-                .padding(.leading, 28)
+                .padding(.leading, 30)
         }
     }
 
@@ -389,17 +425,18 @@ struct RunDetailView: View {
     private func metaLabel(_ label: String, value: String) -> some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
+                .font(.system(size: 10))
+                .foregroundColor(Theme.textTertiary)
             Text(value)
-                .font(.caption2.bold())
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(Theme.textPrimary)
         }
     }
 
     @ViewBuilder
-    private func capsule(_ text: String, color: Color) -> some View {
+    private func chip(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.caption2.bold())
+            .font(.system(size: 10, weight: .semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(color.opacity(0.15))
@@ -407,15 +444,24 @@ struct RunDetailView: View {
             .clipShape(Capsule())
     }
 
+    /// Inline code/transcript block. Uses `Theme.canvas` (slightly darker
+    /// than `Theme.surface`) for subtle contrast inside the row card.
+    /// Keeping this LIGHT — not a dark terminal — preserves the warm
+    /// document aesthetic of the rest of the app.
     @ViewBuilder
     private func codeBlock(_ text: String) -> some View {
         Text(text)
-            .font(.system(.caption, design: .monospaced))
-            .padding(10)
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundColor(Theme.textPrimary)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(NSColor.textBackgroundColor).opacity(0.5))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Theme.canvas)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.divider, lineWidth: 1)
             )
             .textSelection(.enabled)
     }

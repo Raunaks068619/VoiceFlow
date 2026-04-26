@@ -27,9 +27,25 @@ final class RunStore: ObservableObject {
     private let decoder = JSONDecoder()
     private let queue = DispatchQueue(label: "com.voiceflow.runstore", qos: .utility)
 
-    var maxRuns: Int {
+    /// Maximum retained runs, or nil for unlimited.
+    ///
+    /// The cap is a two-part knob: `isCapEnabled` (user toggle, default ON)
+    /// gates whether any cap applies at all; `run_log_max_count` sets the
+    /// actual ceiling when enabled (default 20). Returning nil means the
+    /// ring-buffer trim is skipped entirely — history grows until the user
+    /// clears it.
+    var maxRuns: Int? {
+        guard isCapEnabled else { return nil }
         let stored = UserDefaults.standard.integer(forKey: "run_log_max_count")
         return stored > 0 ? stored : 20
+    }
+
+    /// Whether retention is capped at all. Default ON for safety — first-time
+    /// users get bounded disk usage without having to think about it.
+    var isCapEnabled: Bool {
+        let key = "run_log_cap_enabled"
+        if UserDefaults.standard.object(forKey: key) == nil { return true }
+        return UserDefaults.standard.bool(forKey: key)
     }
 
     var isEnabled: Bool {
@@ -89,10 +105,13 @@ final class RunStore: ObservableObject {
                 var current = self.loadIndexSync()
                 current.insert(summary, at: 0)
 
-                // Ring buffer: trim excess
-                while current.count > self.maxRuns {
-                    let removed = current.removeLast()
-                    self.deleteRunFolder(id: removed.id)
+                // Ring buffer: trim excess only when cap is enabled.
+                // Nil cap → unlimited growth, user pays the disk cost.
+                if let cap = self.maxRuns {
+                    while current.count > cap {
+                        let removed = current.removeLast()
+                        self.deleteRunFolder(id: removed.id)
+                    }
                 }
 
                 try self.writeIndex(current)
@@ -135,6 +154,38 @@ final class RunStore: ObservableObject {
             try? self.writeIndex(current)
             DispatchQueue.main.async {
                 self.summaries = current
+            }
+        }
+    }
+
+    /// Apply the current retention cap immediately.
+    ///
+    /// Called when the user toggles the cap ON after accumulating an
+    /// unlimited history. Without this, the over-cap runs would stick
+    /// around until the next `save()` triggered the ring-buffer trim,
+    /// which feels broken from the user's side ("I just said cap at 20,
+    /// why do I still see 500?").
+    ///
+    /// No-op when cap is disabled or when history is already within cap.
+    func applyCap() {
+        queue.async { [weak self] in
+            guard let self, let cap = self.maxRuns else { return }
+            var current = self.loadIndexSync()
+            guard current.count > cap else { return }
+
+            while current.count > cap {
+                let removed = current.removeLast()
+                self.deleteRunFolder(id: removed.id)
+            }
+
+            do {
+                try self.writeIndex(current)
+                DispatchQueue.main.async {
+                    self.summaries = current
+                }
+                print("RunStore: cap applied, trimmed to \(cap) runs")
+            } catch {
+                print("RunStore: applyCap failed to write index — \(error)")
             }
         }
     }
