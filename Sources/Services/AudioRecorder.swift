@@ -25,14 +25,39 @@ class AudioRecorder: NSObject {
     var onPCM16Samples: ((Data) -> Void)?
     private var pcm16Converter: AVAudioConverter?
     private var pcm16OutputFormat: AVAudioFormat?
-    // ~21ms per 1024-frame buffer at 48kHz. Keep ~500ms tail so trailing
-    // consonants and soft endings ('huh', 'hai') don't get clipped.
-    private let trailingPaddingBufferCount = 24
+
+    // MARK: - Live amplitude (UI meter)
+    //
+    // Fires the latest normalized RMS (0...1) for every input buffer, so the
+    // recording overlay can render a real audio-reactive waveform instead of
+    // a canned sine animation. We reuse the RMS we already compute for the
+    // noise gate — zero extra DSP cost.
+    //
+    // Throttle policy: tap fires ~46Hz at 48kHz/1024. We push every sample
+    // because SwiftUI coalesces @Published updates within a runloop tick;
+    // the cost is one Float marshal across the main queue.
+    var onAmplitude: ((Float) -> Void)?
+    // ~21ms per 1024-frame buffer at 48kHz. Keep ~700ms tail so trailing
+    // consonants, soft endings ('huh', 'hai'), and the natural release
+    // of the user's last syllable don't get clipped. Bumped from 500ms
+    // after a regression where final words were getting cut.
+    private let trailingPaddingBufferCount = 32
     // Keep ~200ms of lead-in before the first detected voice activity. This
     // captures the onset ramp of the first word — the phoneme attack is
     // almost always below steady-state RMS for 20-80ms, and clipping it
     // makes Whisper mis-hear or drop the word entirely.
     private let leadingPaddingBufferCount = 10
+    // Grace period after `stopRecording` is invoked, before we actually
+    // tear down the engine. Why: the trailing-padding pass can only pad
+    // with buffers that already exist. If the user releases Fn the
+    // instant they finish speaking, `lastVoicedIndex` IS the final
+    // buffer — there's nothing to pad with, so the trailing word gets
+    // clipped. This grace period lets the input tap collect ~350ms more
+    // audio after the user's release, giving the padding logic real
+    // buffers to work with. Cost: 350ms of perceived latency between
+    // Fn release and transcript landing. Worth it — every regression
+    // report was about cut-off words at the end.
+    private let stopGraceMilliseconds: Int = 350
 
     override init() {
         super.init()
@@ -87,6 +112,15 @@ class AudioRecorder: NSObject {
                 if self.firstVoicedIndex == nil { self.firstVoicedIndex = index }
                 self.lastVoicedIndex = index
             }
+            // Push live amplitude to any UI meter subscriber. Normalize and
+            // mild non-linear curve so quiet speech still moves the bars
+            // (raw RMS for normal speech sits around 0.02–0.10, which would
+            // barely budge a linear meter). sqrt + clamp gives a perceptually
+            // smoother response — same trick AVAudioRecorder's metering uses.
+            if let onAmplitude = self.onAmplitude {
+                let normalized = min(1.0, sqrt(rms) * 1.6)
+                DispatchQueue.main.async { onAmplitude(normalized) }
+            }
             // Additive: if streaming is enabled, also emit PCM16 @ 24kHz.
             // Failure here is silent — streaming is best-effort on top of
             // the batch pipeline, not a replacement.
@@ -115,29 +149,38 @@ class AudioRecorder: NSObject {
             return
         }
 
-        inputNode?.removeTap(onBus: 0)
-        audioEngine?.stop()
-        isRecording = false
+        // Grace period: keep the tap installed for a few hundred ms after
+        // the user releases Fn. This guarantees the trailing-padding logic
+        // has actual buffers to pad with — without it, words dictated up
+        // to the moment of release get clipped. See the constant comment
+        // for the full rationale.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(stopGraceMilliseconds)) { [weak self] in
+            guard let self = self else { return }
 
-        let selectedBuffers: [AVAudioPCMBuffer]
-        if let first = firstVoicedIndex, let last = lastVoicedIndex {
-            // Trim leading/trailing silence with padding on both sides. Interior
-            // silence is preserved — a 3-second pause mid-sentence stays a
-            // 3-second pause, so Whisper can segment properly.
-            let start = max(0, first - leadingPaddingBufferCount)
-            let end = min(rawAudioBuffer.count - 1, last + trailingPaddingBufferCount)
-            selectedBuffers = Array(rawAudioBuffer[start...end])
-            print("Recording stopped (voiced range \(first)...\(last) of \(rawAudioBuffer.count), trimmed to \(start)...\(end))")
-        } else {
-            // No voice activity detected at all — user probably tapped Fn by
-            // mistake. Send the raw audio anyway; Whisper will return empty
-            // and the empty-guard in WhisperService will drop it quietly.
-            selectedBuffers = rawAudioBuffer
-            print("Recording stopped (no voice detected, sending raw audio)")
+            self.inputNode?.removeTap(onBus: 0)
+            self.audioEngine?.stop()
+            self.isRecording = false
+
+            let selectedBuffers: [AVAudioPCMBuffer]
+            if let first = self.firstVoicedIndex, let last = self.lastVoicedIndex {
+                // Trim leading/trailing silence with padding on both sides.
+                // Interior silence is preserved — a 3s mid-sentence pause stays
+                // a 3s pause so Whisper's segmenter has a chance.
+                let start = max(0, first - self.leadingPaddingBufferCount)
+                let end = min(self.rawAudioBuffer.count - 1, last + self.trailingPaddingBufferCount)
+                selectedBuffers = Array(self.rawAudioBuffer[start...end])
+                print("Recording stopped (voiced range \(first)...\(last) of \(self.rawAudioBuffer.count), trimmed to \(start)...\(end), grace=\(self.stopGraceMilliseconds)ms)")
+            } else {
+                // No voice activity detected at all — user probably tapped Fn
+                // by mistake. Send the raw audio anyway; Whisper will return
+                // empty and the empty-guard in WhisperService drops it.
+                selectedBuffers = self.rawAudioBuffer
+                print("Recording stopped (no voice detected, sending raw audio)")
+            }
+
+            let audioData = self.convertBuffersToWAV(from: selectedBuffers)
+            completion(audioData)
         }
-
-        let audioData = convertBuffersToWAV(from: selectedBuffers)
-        completion(audioData)
     }
     
     private func convertBuffersToWAV(from buffers: [AVAudioPCMBuffer]) -> Data? {

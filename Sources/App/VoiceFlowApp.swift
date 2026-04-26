@@ -212,6 +212,15 @@ final class PermissionService: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// Synchronous, side-effect-free snapshot of the current mic TCC state.
+    /// Used by the pre-flight check in `startRecording()` where we can't
+    /// tolerate a stale @Published value — `refreshStatus()` is main-queue
+    /// async and returns before the property is updated, so callers that
+    /// need an up-to-the-microsecond read should use this instead.
+    func snapshotMicrophoneState() -> PermissionState {
+        return currentMicrophoneState()
+    }
+
     private func currentMicrophoneState() -> PermissionState {
         var hasGranted = false
         var hasDenied = false
@@ -366,6 +375,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         audioRecorder = AudioRecorder()
         whisperService = WhisperService()
+        // Kick off connection pre-warm immediately. TLS + HTTP/2 handshake
+        // to api.openai.com costs ~150-300ms on a cold URLSession pool and
+        // shows up as fixed overhead on the FIRST dictation after launch.
+        // RunLog p50 STT latency is ~2s — shaving that handshake off a
+        // 3s median utterance is a free ~10% latency win.
+        whisperService?.prewarmConnections()
         textInjector = TextInjector()
         hotKeyListener = HotKeyListener()
         hotKeyListener?.onKeyDown = { [weak self] in
@@ -496,7 +511,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             mainWindow = NSWindow(contentViewController: hostingController)
             mainWindow?.title = "VoiceFlow"
             mainWindow?.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            mainWindow?.setContentSize(NSSize(width: 720, height: 620))
+            // Generous default — Wispr-Flow-shape proportions. The
+            // dashboard's content (hero + stats row, full timeline, sidebar)
+            // breathes much better at ~1100×780 than the cramped 720×620 it
+            // used to open at. Window is .resizable so users can shrink if
+            // needed.
+            mainWindow?.setContentSize(NSSize(width: 1100, height: 780))
             mainWindow?.center()
             mainWindow?.isReleasedWhenClosed = false
         }
@@ -544,7 +564,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             onboardingWindow = NSWindow(contentViewController: hostingController)
             onboardingWindow?.title = "Welcome to VoiceFlow"
             onboardingWindow?.styleMask = [.titled, .closable]
-            onboardingWindow?.setContentSize(NSSize(width: 520, height: 420))
+            onboardingWindow?.setContentSize(NSSize(width: 600, height: 640))
             onboardingWindow?.center()
         }
 
@@ -598,6 +618,58 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func startRecording() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+
+            // -----------------------------------------------------------------
+            // Pre-flight permission check.
+            //
+            // Previously, we always called AVAudioEngine.start() and only
+            // reacted to failure. That had two bugs:
+            //   1. On `.notDetermined` + ad-hoc signatures, engine.start()
+            //      can succeed but silently capture zero samples. The empty
+            //      buffer flowed to Whisper, which fell back to echoing its
+            //      multipart prompt — which then got "cleaned" by the polish
+            //      LLM and injected into the user's editor.
+            //   2. On `.denied`, users saw the recording overlay flash and
+            //      then disappear with no feedback about WHY.
+            //
+            // New flow: synchronously refresh TCC state, gate on mic BEFORE
+            // touching the audio engine, and route each state to a clear
+            // recovery path. Mic is the only hard blocker here — accessibility
+            // is needed for injection but checked at inject-time, and input
+            // monitoring was already needed for the hotkey to fire.
+            // -----------------------------------------------------------------
+            // Read TCC state synchronously — `microphoneState` is @Published
+            // and updated via a main-async refresh, which won't have run
+            // yet if we called refreshStatus() from this same main-queue
+            // block. snapshotMicrophoneState() bypasses the pub/sub layer.
+            let micState = self.permissionService.snapshotMicrophoneState()
+            // Fire-and-forget refresh so downstream observers (overlay,
+            // dashboard) catch up — doesn't gate this decision.
+            self.permissionService.refreshStatus()
+
+            switch micState {
+            case .granted:
+                break // fall through to the real recording path
+            case .notDetermined, .restrictedOrUnknown:
+                // First-time launch: trigger the system prompt. Do NOT start
+                // the engine — the user hasn't decided yet, and a speculative
+                // capture produces the empty-audio + prompt-echo failure mode.
+                print("Mic permission not determined — requesting access, aborting this recording attempt")
+                self.isRecording = false
+                self.permissionService.requestMicrophoneAccess()
+                return
+            case .denied:
+                // User previously denied. Give clear audible feedback and
+                // open the privacy pane so they can fix it. No overlay — a
+                // flashing chip with no dictation is worse than silence.
+                print("Mic permission denied — opening Privacy pane")
+                self.isRecording = false
+                NSSound.beep()
+                self.permissionService.openPrivacyPane(.microphone)
+                return
+            }
+
+            // From here down, mic is granted. Everything else is best-effort.
             self.showRecordingOverlay()
             // Spin up realtime streaming BEFORE starting the tap so the
             // PCM16 callback is already set. If the flag is off, skip
@@ -608,16 +680,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if didStart {
                 self.permissionService.markMicrophoneOperational()
             } else {
-                // Engine failed to start — most likely mic permission not granted.
-                // AVAudioEngine.start() does NOT trigger the system mic prompt;
-                // it just throws. We must explicitly request access so macOS shows
-                // the dialog and registers VoiceFlow in the Microphone privacy pane.
+                // Engine failed to start despite granted permission — usually
+                // a device contention issue (another app holding the mic).
+                // Bail cleanly; the pre-flight already covered the common
+                // "no permission" case.
+                print("Audio engine failed to start despite granted mic permission")
                 self.isRecording = false
                 self.hideRecordingOverlay()
-
-                if !self.permissionService.microphoneState.isGranted {
-                    self.permissionService.requestMicrophoneAccess()
-                }
+                NSSound.beep()
             }
         }
     }
@@ -824,9 +894,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             recordingOverlay = RecordingOverlayWindow()
         }
         recordingOverlay?.show(state: .recording)
+        // Wire live audio amplitude → overlay waveform. We capture the
+        // overlay weakly so the audio recorder can outlive the panel
+        // without keeping it pinned in memory. Cleared in hideRecordingOverlay.
+        audioRecorder?.onAmplitude = { [weak overlay = recordingOverlay] level in
+            overlay?.updateAudioLevel(level)
+        }
     }
 
     private func hideRecordingOverlay() {
+        // Drop the amplitude callback BEFORE hiding so trailing buffers
+        // from the engine teardown don't try to update a panel that's
+        // already animating off-screen.
+        audioRecorder?.onAmplitude = nil
         recordingOverlay?.hide()
     }
 }

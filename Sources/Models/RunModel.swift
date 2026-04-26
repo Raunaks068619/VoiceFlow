@@ -17,16 +17,21 @@ struct Run: Codable, Identifiable {
     /// failures don't all collapse to the useless "(no transcript)" row.
     let errorMessage: String?
 
-    /// First ~80 chars of finalText (or rawText) for list-row preview.
-    /// On failure falls back to the error message so the log row tells you
-    /// *why* it failed (e.g. "401 Unauthorized") instead of lying about
-    /// empty audio.
+    /// Full transcript text for list-row display (or error message on failure).
+    ///
+    /// Previously capped at 80 chars — that decision was made when the row
+    /// layout was a single ellipsis-truncated line. The Home timeline now
+    /// wraps multi-line so any cap here is destructive: the full transcript
+    /// gets baked into `RunSummary` and persisted, losing data even though
+    /// the full text is also stored in `run.json`. Trust the UI to handle
+    /// length: rows that want a one-liner can apply `.lineLimit(1)` at the
+    /// view layer; rows that want full text just don't.
     var previewText: String {
         let source = postProcessing?.finalText ?? transcription?.rawText ?? ""
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return String(trimmed.prefix(80)) }
+        if !trimmed.isEmpty { return trimmed }
         if status == .failed, let msg = errorMessage, !msg.isEmpty {
-            return "⚠︎ " + String(msg.prefix(80))
+            return "⚠︎ " + msg
         }
         return "(no transcript)"
     }
