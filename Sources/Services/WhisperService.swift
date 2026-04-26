@@ -42,10 +42,23 @@ enum TranscriptionProvider: String {
 /// string in Settings — cleaner SwiftUI binding than two coupled defaults.
 enum PolishBackend {
     case openai(model: String)
+    case groq(model: String)
     case local(provider: LocalProvider, model: String)
 
     static let userDefaultsKey = "polish_backend_id"
-    static let defaultId = "openai::gpt-4.1-mini"
+    /// Default polish for the bring-your-own-OpenAI-key path.
+    static let defaultIdOpenAI = "openai::gpt-4.1-mini"
+    /// Default polish for the embedded-Groq-key (free) tier. Llama-3.3-70b
+    /// is Groq's flagship general-purpose chat model — handles English
+    /// cleanup, filler removal, and grammar fixes well. Hinglish polish
+    /// is intentionally not on the table for this tier (locked at the UI).
+    static let defaultIdGroq = "groq::llama-3.3-70b-versatile"
+    /// Convenience for "what's the right default given the user's key state."
+    /// Settings UI also calls this when it detects key changes.
+    static var defaultId: String {
+        let openAIKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
+        return openAIKey.isEmpty ? defaultIdGroq : defaultIdOpenAI
+    }
 
     static var current: PolishBackend {
         let id = UserDefaults.standard.string(forKey: userDefaultsKey) ?? defaultId
@@ -55,12 +68,13 @@ enum PolishBackend {
     static func parse(id: String) -> PolishBackend {
         let parts = id.components(separatedBy: "::")
         guard parts.count == 2, !parts[1].isEmpty else {
-            return .openai(model: "gpt-4.1-mini")
+            return .groq(model: "llama-3.3-70b-versatile")
         }
         let (kind, model) = (parts[0], parts[1])
         switch kind {
         case "lmstudio": return .local(provider: .lmstudio, model: model)
         case "ollama":   return .local(provider: .ollama,   model: model)
+        case "groq":     return .groq(model: model)
         default:         return .openai(model: model)
         }
     }
@@ -68,6 +82,7 @@ enum PolishBackend {
     var id: String {
         switch self {
         case .openai(let m): return "openai::\(m)"
+        case .groq(let m):   return "groq::\(m)"
         case .local(let p, let m): return "\(p.rawValue)::\(m)"
         }
     }
@@ -76,6 +91,9 @@ enum PolishBackend {
         switch self {
         case .openai:
             return URL(string: "https://api.openai.com/v1/chat/completions")!
+        case .groq:
+            // OpenAI-compatible chat completions endpoint on Groq's host.
+            return URL(string: "https://api.groq.com/openai/v1/chat/completions")!
         case .local(let provider, _):
             return provider.baseURL.appendingPathComponent("chat/completions")
         }
@@ -83,7 +101,7 @@ enum PolishBackend {
 
     var modelName: String {
         switch self {
-        case .openai(let m), .local(_, let m): return m
+        case .openai(let m), .groq(let m), .local(_, let m): return m
         }
     }
 
@@ -91,17 +109,23 @@ enum PolishBackend {
     var displayLabel: String {
         switch self {
         case .openai(let m): return "openai/\(m)"
+        case .groq(let m):   return "groq/\(m)"
         case .local(let p, let m): return "\(p.rawValue)/\(m)"
         }
     }
 
     /// API key lookup — cloud backends need one, local backends don't.
+    /// Groq path falls back to the embedded beta key for users who haven't
+    /// added their own; that's the whole point of the free tier.
     func apiKey() -> String {
         switch self {
         case .openai:
             return UserDefaults.standard.string(forKey: "openai_api_key")
                 ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
                 ?? ""
+        case .groq:
+            let userKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
+            return userKey.isEmpty ? EmbeddedKeys.groq : userKey
         case .local:
             // LM Studio / Ollama accept any string (or none) for auth. Sending
             // a placeholder keeps the Authorization header shape consistent
@@ -113,6 +137,30 @@ enum PolishBackend {
     var requiresAPIKey: Bool {
         if case .local = self { return false }
         return true
+    }
+}
+
+/// Embedded API keys for the free-tier beta. The Groq key ships with the
+/// binary so users get fast English dictation out of the box.
+///
+/// SECURITY: this constant is REPLACED locally before building. Never
+/// commit your real key. After editing the value below, run:
+///
+///     git update-index --skip-worktree Sources/Services/WhisperService.swift
+///
+/// to keep your local edit out of every diff. If the value is still the
+/// placeholder, the app falls through to the user-provided key path.
+enum EmbeddedKeys {
+    /// Groq free-tier beta key. Replace with your real `gsk_...` key locally.
+    /// Long-term plan: move this to a backend proxy so the key never ships
+    /// with the binary.
+    static let groq: String = "REPLACE_WITH_YOUR_GROQ_KEY"
+
+    /// Whether an embedded Groq key is actually configured. Used by the
+    /// UI to decide whether to show "free tier active" status or prompt
+    /// the user to add their own key.
+    static var hasGroq: Bool {
+        !groq.isEmpty && groq != "REPLACE_WITH_YOUR_GROQ_KEY"
     }
 }
 
@@ -543,10 +591,16 @@ class WhisperService {
             ?? ""
     }
 
+    /// User-provided key wins. Falls back to env var, then to the embedded
+    /// beta key. So a user with an empty Groq field still gets transcription
+    /// for free during the beta.
     private func groqAPIKey() -> String {
-        UserDefaults.standard.string(forKey: "groq_api_key")
-            ?? ProcessInfo.processInfo.environment["GROQ_API_KEY"]
-            ?? ""
+        let userKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
+        if !userKey.isEmpty { return userKey }
+        if let envKey = ProcessInfo.processInfo.environment["GROQ_API_KEY"], !envKey.isEmpty {
+            return envKey
+        }
+        return EmbeddedKeys.groq
     }
 
     private func transcribeWithModel(
