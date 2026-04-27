@@ -269,14 +269,20 @@ struct MainDashboardView: View {
     enum Tab: String, CaseIterable {
         case home       = "Home"
         case scratchpad = "Scratchpad"
+        case insights   = "Insights"
+        case magicWords = "Magic Words"
         case runLog     = "Run Log"
+        case devMode    = "Dev Mode"
         case settings   = "Settings"
 
         var icon: String {
             switch self {
             case .home:       return "house"
             case .scratchpad: return "note.text"
+            case .insights:   return "chart.bar.fill"
+            case .magicWords: return "wand.and.stars"
             case .runLog:     return "clock.arrow.circlepath"
+            case .devMode:    return "hammer"
             case .settings:   return "gearshape"
             }
         }
@@ -443,7 +449,10 @@ struct MainDashboardView: View {
                 switch selectedTab {
                 case .home:       homeContent
                 case .scratchpad: ScratchpadView(runStore: runStore)
+                case .insights:   InsightsView(runStore: runStore)
+                case .magicWords: MagicWordsSettingsView()
                 case .runLog:     RunLogView(runStore: runStore)
+                case .devMode:    DevModeSettingsView()
                 case .settings:   settingsContent
                 }
             }
@@ -471,7 +480,10 @@ struct MainDashboardView: View {
             switch raw {
             case "home":       selectedTab = .home
             case "scratchpad": selectedTab = .scratchpad
+            case "insights":   selectedTab = .insights
+            case "magicWords": selectedTab = .magicWords
             case "runLog":     selectedTab = .runLog
+            case "devMode":    selectedTab = .devMode
             case "settings":   selectedTab = .settings
             default: break
             }

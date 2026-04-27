@@ -48,8 +48,34 @@ final class RunSession {
     private var postProcessLatencyMs: Int = 0
     private var languageGuardTriggered: Bool = false
 
+    // Phase 1+ context fields
+    private var context: ContextSnapshot?
+    private var profileUsed: String?
+    private var profileTrace: [String]?
+    private var llmCostUSD: Double = 0
+
     init(store: RunStore) {
         self.store = store
+    }
+
+    // MARK: - Context attachment
+
+    /// Snapshot taken at hotkey-press. Call once per session, before
+    /// any pipeline stage. Subsequent calls overwrite.
+    func attachContext(_ context: ContextSnapshot) {
+        self.context = context
+    }
+
+    /// Profile + trace from TransformerRouter.route(...). Call once
+    /// after a profile resolves, before transform() runs.
+    func attachProfile(kind: ProfileKind, trace: [String]) {
+        self.profileUsed = kind.rawValue
+        self.profileTrace = trace
+    }
+
+    /// Accumulate LLM cost from each transform/agentic step.
+    func recordLLMCost(_ amount: Double) {
+        self.llmCostUSD += amount
     }
 
     // MARK: - Stage callbacks
@@ -138,7 +164,11 @@ final class RunSession {
             capture: capture,
             transcription: transcription,
             postProcessing: postProcessing,
-            errorMessage: nil
+            errorMessage: nil,
+            context: context,
+            profileUsed: profileUsed,
+            profileTrace: profileTrace,
+            llmCostUSD: llmCostUSD > 0 ? llmCostUSD : nil
         )
 
         if let audioData = audioData {
@@ -177,7 +207,11 @@ final class RunSession {
             capture: capture,
             transcription: transcription,
             postProcessing: nil,
-            errorMessage: reason
+            errorMessage: reason,
+            context: context,
+            profileUsed: profileUsed,
+            profileTrace: profileTrace,
+            llmCostUSD: llmCostUSD > 0 ? llmCostUSD : nil
         )
 
         if let audioData = audioData {

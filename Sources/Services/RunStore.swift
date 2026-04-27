@@ -93,14 +93,25 @@ final class RunStore: ObservableObject {
                 let runData = try self.encoder.encode(run)
                 try runData.write(to: folderURL.appendingPathComponent("run.json"))
 
-                // Update index
+                // Update index — denormalize the new context fields so
+                // list rows can render the app-chip + profile pill without
+                // loading run.json. Word count cached for Insights' WPM math.
+                let wordCount = run.previewText
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                    .count
                 let summary = RunSummary(
                     id: run.id,
                     createdAt: run.createdAt,
                     durationSeconds: run.durationSeconds,
                     status: run.status,
                     previewText: run.previewText,
-                    errorMessage: run.errorMessage
+                    errorMessage: run.errorMessage,
+                    frontmostBundleID: run.context?.frontmostBundleID,
+                    frontmostAppName: run.context?.frontmostAppName,
+                    profileUsed: run.profileUsed,
+                    llmCostUSD: run.llmCostUSD,
+                    wordCount: wordCount
                 )
                 var current = self.loadIndexSync()
                 current.insert(summary, at: 0)

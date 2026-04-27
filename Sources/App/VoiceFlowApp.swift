@@ -347,6 +347,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let runStore = RunStore.shared
     lazy var runRecorder = RunRecorder(store: runStore)
 
+    /// Captured at hotkey-press (startRecording), consumed at result-time.
+    /// The snapshot must be taken EAGERLY because by the time the LLM
+    /// returns, the user may have alt-tabbed and the AX selection is gone.
+    private var pendingContext: ContextSnapshot?
+
+    /// Router instance — created lazily because it depends on whisperService.
+    private lazy var transformerRouter: TransformerRouter? = {
+        guard let whisper = whisperService else { return nil }
+        return TransformerRouter(whisper: whisper)
+    }()
+
     /// Condense an Error into a short string for the Run Log.
     /// We prefer HTTP-style reasons ("401 Unauthorized") over Swift's default
     /// `Error` description which tends to be noisy for URLSession failures.
@@ -911,6 +922,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
+            // EAGERLY capture context (active app + selection). Done at
+            // press-time, NOT at result-time, because by the time STT +
+            // LLM returns 1–4s later, the user may have alt-tabbed away.
+            // ContextProvider is fail-soft — returns an empty snapshot if
+            // capture is disabled or AX is unavailable.
+            self.pendingContext = ContextProvider.shared.snapshot(hotkey: .primary)
+
             // -----------------------------------------------------------------
             // Pre-flight permission check.
             //
@@ -1086,7 +1104,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 // of a dropped WebSocket.
                 let handleResult: (Result<TranscriptionMetadata, Error>) -> Void = { [weak self] result in
                     DispatchQueue.main.async {
-                        self?.hideRecordingOverlay()
+                        guard let self = self else { return }
+                        self.hideRecordingOverlay()
                         switch result {
                         case .success(let metadata):
                             // Stage 2: Transcription
@@ -1096,7 +1115,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                                 latencyMs: metadata.transcriptionLatencyMs
                             )
 
-                            // Stage 3: Post-processing
+                            // Stage 3: Post-processing — record what the
+                            // legacy polish path produced so the run log
+                            // shows the original cleanup result even when
+                            // a router-driven profile overrides finalText.
                             if let mode = metadata.postProcessMode {
                                 session.postProcessCompleted(
                                     mode: mode,
@@ -1109,18 +1131,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                                 )
                             }
 
-                            // Flush to RunStore
-                            session.finish()
+                            // Attach context to the run BEFORE the router
+                            // potentially routes — the snapshot is needed
+                            // both for routing (trigger detection) AND for
+                            // the run log row (per-app insights).
+                            let context = self.pendingContext ?? .empty()
+                            session.attachContext(context)
+                            self.pendingContext = nil
 
-                            let text = metadata.finalText
-                            print("Transcription success: \(text.count) chars")
-                            guard !text.isEmpty else {
-                                print("Empty transcript (likely hallucination-filtered); nothing to inject.")
-                                return
-                            }
-                            self?.textInjector?.injectText(text)
+                            // Routing: decide if a non-standard profile
+                            // should override the polished finalText.
+                            //
+                            // Tradeoff: we ALWAYS run the legacy polish
+                            // path first, even when the trigger is going
+                            // to override it. That's a wasted polish call
+                            // when dev mode triggers — the cost is one
+                            // extra LLM call (~500ms-1.5s on the cloud
+                            // backend). We accept it for now because the
+                            // alternative is to refactor the streaming /
+                            // batch / fallback paths to bypass polish on
+                            // trigger detection, which is high-risk.
+                            // FOLLOW-UP: skip polish on detected trigger.
+                            self.applyRouterOverride(
+                                rawTranscript: metadata.rawText,
+                                fallbackFinalText: metadata.finalText,
+                                context: context,
+                                style: effectiveStyle,
+                                mode: processingMode,
+                                session: session
+                            )
 
                         case .failure(let error):
+                            // Attach context to failed runs too — these are
+                            // where debugging value is highest. We need to
+                            // know which app they were dictating to when
+                            // it broke.
+                            if let ctx = self.pendingContext {
+                                session.attachContext(ctx)
+                                self.pendingContext = nil
+                            }
                             print("Transcription error: \(error)")
                             session.fail(reason: Self.shortErrorDescription(error))
                         }
@@ -1171,6 +1220,91 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Router-driven profile override
+
+    /// Bridge between the legacy `transcribeAndPolishWithMetadata` pipeline
+    /// and the new TransformerProfile router.
+    ///
+    /// Behavior:
+    /// - If the router picks `.standardCleanup`, just inject the polished
+    ///   `fallbackFinalText` (no second LLM call — we already polished).
+    /// - Otherwise, run `profile.transform(...)` and inject ITS output.
+    ///
+    /// Why this design over rewriting the pipeline: keeps the existing
+    /// streaming/batch/fallback paths untouched. Magic word + dev mode +
+    /// var recognition slot in cleanly without a giant refactor.
+    private func applyRouterOverride(
+        rawTranscript: String,
+        fallbackFinalText: String,
+        context: ContextSnapshot,
+        style: TranscriptOutputStyle,
+        mode: TranscriptProcessingMode,
+        session: RunSession
+    ) {
+        // No router available (whisper not yet initialized — shouldn't
+        // happen in practice but guards initialization order).
+        guard let router = self.transformerRouter else {
+            self.persistAndInject(text: fallbackFinalText, session: session)
+            return
+        }
+
+        // Empty raw transcript → nothing to route. Use polished output
+        // (which may also be empty) so the existing hallucination guards
+        // continue to work.
+        let trimmedRaw = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRaw.isEmpty else {
+            self.persistAndInject(text: fallbackFinalText, session: session)
+            return
+        }
+
+        let decision = router.route(transcript: trimmedRaw, context: context)
+        session.attachProfile(kind: decision.profile.kind, trace: decision.trace)
+
+        // Standard cleanup → use the polish path's output. We DON'T
+        // call StandardCleanupProfile.transform() because that would be
+        // a second polish round-trip on the same text.
+        if decision.profile.kind == .standardCleanup {
+            self.persistAndInject(text: fallbackFinalText, session: session)
+            return
+        }
+
+        // Non-standard profile → run its transform, override final text.
+        let input = TransformerInput(
+            rawTranscript: trimmedRaw,
+            context: context,
+            style: style,
+            mode: mode
+        )
+        decision.profile.transform(input) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let output):
+                    session.recordLLMCost(output.costUSD)
+                    self.persistAndInject(text: output.finalText, session: session)
+                case .failure(let err):
+                    // Profile failed — fall back to polished text rather
+                    // than dropping the dictation on the floor.
+                    print("Profile \(decision.profile.kind.rawValue) failed: \(err.localizedDescription) — falling back to polished text")
+                    self.persistAndInject(text: fallbackFinalText, session: session)
+                }
+            }
+        }
+    }
+
+    /// Common tail: flush the run to disk + inject text into the focused
+    /// app. Called from both the success and profile-failure paths.
+    private func persistAndInject(text: String, session: RunSession) {
+        session.finish()
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            print("Empty transcript (likely hallucination-filtered); nothing to inject.")
+            return
+        }
+        self.textInjector?.injectText(trimmed)
     }
 
     // MARK: - Realtime streaming wiring
