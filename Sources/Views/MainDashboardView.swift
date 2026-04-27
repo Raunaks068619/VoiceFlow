@@ -940,21 +940,102 @@ struct MainDashboardView: View {
         return "Save audio, transcripts, and prompts locally for each dictation. No cap — history grows until you clear it manually."
     }
 
+    /// Sensitivity = inverse of the noise gate threshold. We want the
+    /// slider to feel intuitive: drag right = MORE sensitive (catches
+    /// quieter speech). The underlying threshold is the opposite axis,
+    /// so we map slider 0..1 → threshold 0.001..0.030.
+    private var sensitivityValue: Double {
+        // Convert stored threshold back to "sensitivity" 0..1 for the slider.
+        let clamped = max(0.001, min(0.030, noiseGateThreshold))
+        return 1.0 - ((clamped - 0.001) / (0.030 - 0.001))
+    }
+
     private var microphoneFilterCard: some View {
         cardContainer {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Microphone Filter")
-                    .font(.headline)
-                Slider(value: $noiseGateThreshold, in: 0.001...0.05, step: 0.001)
-                    .onChange(of: noiseGateThreshold) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "noise_gate_threshold")
-                    }
-                Text("Sensitivity: \(String(format: "%.3f", noiseGateThreshold)) — higher filters more background noise. Bump this up if quiet room noise is being transcribed as words.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Microphone Sensitivity")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    Text(sensitivityLabel)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(Theme.textSecondary)
+                }
+
+                // Sensitivity slider — left = strict (only loud speech
+                // counts), right = sensitive (catches whispers, also
+                // catches typing/AC noise).
+                HStack(spacing: 10) {
+                    Image(systemName: "speaker.wave.1")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                    Slider(
+                        value: Binding(
+                            get: { sensitivityValue },
+                            set: { newSens in
+                                // Reverse: sensitivity 0..1 → threshold 0.030..0.001
+                                let threshold = 0.001 + (1.0 - newSens) * (0.030 - 0.001)
+                                noiseGateThreshold = threshold
+                                UserDefaults.standard.set(threshold, forKey: "noise_gate_threshold")
+                            }
+                        ),
+                        in: 0...1
+                    )
+                    .accentColor(Theme.accent)
+                    Image(systemName: "speaker.wave.3")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                }
+
+                // One-tap presets — easier than fiddling with the slider.
+                HStack(spacing: 8) {
+                    sensitivityPresetButton(label: "Strict",  threshold: 0.020)
+                    sensitivityPresetButton(label: "Balanced", threshold: 0.008)
+                    sensitivityPresetButton(label: "Sensitive", threshold: 0.003)
+                }
+
+                Text(sensitivityHelpText)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var sensitivityLabel: String {
+        if noiseGateThreshold >= 0.015 { return "Strict" }
+        if noiseGateThreshold >= 0.006 { return "Balanced" }
+        return "Sensitive"
+    }
+
+    private var sensitivityHelpText: String {
+        switch sensitivityLabel {
+        case "Strict":
+            return "Only loud, clear speech is captured. Use this in noisy rooms — but quiet speech may be dropped."
+        case "Sensitive":
+            return "Catches quiet speech and whispers. Use this if your fn-presses are producing nothing — but background noise may bleed in."
+        default:
+            return "Default — works for most setups. Bump UP if room noise is being transcribed; bump DOWN if your speech is being dropped."
+        }
+    }
+
+    private func sensitivityPresetButton(label: String, threshold: Double) -> some View {
+        Button {
+            noiseGateThreshold = threshold
+            UserDefaults.standard.set(threshold, forKey: "noise_gate_threshold")
+        } label: {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(sensitivityLabel == label ? Theme.textOnDark : Theme.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(sensitivityLabel == label ? Theme.accent : Theme.surfaceElevated)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private var statusCard: some View {
@@ -1023,6 +1104,12 @@ struct MainDashboardView: View {
                 realtimeStreamingCard
                 polishModelCard
                 outputStyleCard
+                // Mic sensitivity — was previously defined but orphaned
+                // (never composed into the Settings tab). Restored here
+                // because users hitting the silence-gate hard-drop need a
+                // way to recover: bump sensitivity DOWN to catch quieter
+                // speech, or UP if their AC/keyboard is being transcribed.
+                microphoneFilterCard
                 permissionsCard
                 setupCard
                 footerActions
@@ -1744,7 +1831,7 @@ final class FocusDetector {
 /// Hover behavior: in `.idle`, hovering reveals a small gear button on the
 /// right. Click → opens Settings. Other states ignore hover.
 final class FloatingChipModel: ObservableObject {
-    enum ChipState: Equatable { case idle, recording, processing, noInputWarning, permissionsMissing }
+    enum ChipState: Equatable { case idle, recording, processing, noInputWarning, permissionsMissing, noAudioWarning }
 
     @Published var state: ChipState = .idle
     /// Live mic amplitude during `.recording`. 0...1, normalized.
@@ -1918,6 +2005,27 @@ final class FloatingChipWindow: NSPanel {
         }
     }
 
+    /// Fires when AudioRecorder returns nil — no buffer crossed the noise
+    /// gate threshold during the entire fn-press window. Without this
+    /// signal users see literally nothing happen post-release and assume
+    /// the app is broken. The chip states a clear message + implicit
+    /// pointer to Mic Sensitivity in Settings.
+    func flashNoAudioWarning(durationSeconds: Double = 3.0) {
+        DispatchQueue.main.async { [weak self] in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                self?.model.state = .noAudioWarning
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + durationSeconds) { [weak self] in
+            guard let self = self else { return }
+            if self.model.state == .noAudioWarning {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    self.model.state = .idle
+                }
+            }
+        }
+    }
+
     /// Push live audio amplitude (0...1). Safe from any thread.
     func updateAudioLevel(_ level: Float) {
         if Thread.isMainThread {
@@ -2034,7 +2142,53 @@ struct FloatingChipView: View {
             warningChip
         case .permissionsMissing:
             permissionsWarningChip
+        case .noAudioWarning:
+            noAudioWarningChip
         }
+    }
+
+    /// Shown when fn was held but no audio crossed the noise gate. The
+    /// click target opens Settings — bumping Mic Sensitivity up is the
+    /// cure for "fn does nothing on quiet speech" complaints.
+    private var noAudioWarningChip: some View {
+        Button {
+            NotificationCenter.default.post(
+                name: Notification.Name("VoiceFlow.OpenSettings"),
+                object: nil
+            )
+        } label: {
+            HStack(spacing: 10) {
+                HStack(spacing: 4) {
+                    Image(systemName: "mic.slash.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Quiet")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.55))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(Color.white.opacity(0.14))
+                )
+
+                Text("Didn't catch that — adjust Mic Sensitivity")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Spacer(minLength: 4)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.55))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .chipGlass()
+        }
+        .buttonStyle(.plain)
+        .help("Open Settings to adjust Mic Sensitivity")
     }
 
     // MARK: Idle — tiny capsule with VoiceFlow logo + hover-revealed gear

@@ -601,7 +601,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             UserDefaults.standard.set(TranscriptProcessingMode.dictation.rawValue, forKey: "processing_mode")
         }
         if UserDefaults.standard.object(forKey: "noise_gate_threshold") == nil {
-            UserDefaults.standard.set(0.008, forKey: "noise_gate_threshold")
+            // 0.005 is more permissive than the previous 0.008 default —
+            // quiet speakers and laptops with budget mics were getting
+            // hard-dropped at 0.008. The Sensitivity slider in Settings
+            // exposes the full range (0.001 — 0.030) so users in noisy
+            // environments can dial it back up.
+            UserDefaults.standard.set(0.005, forKey: "noise_gate_threshold")
         }
         // Realtime streaming default ON. The biggest single perceived-latency
         // win we can ship: instead of waiting for Fn-release → upload WAV →
@@ -1041,12 +1046,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     // timeout. setupRealtimeStreamIfEnabled() also clears
                     // it at the START of the next session, but that's too
                     // late if the user starts another recording quickly.
+                    //
+                    // UX feedback: previously this path silently no-op'd
+                    // and users saw NOTHING happen after fn-release —
+                    // they'd assume the app was broken. We now flash the
+                    // chip with a "no audio detected" hint so the user
+                    // knows their input was below the noise gate, with
+                    // the implicit pointer to Settings → Mic Sensitivity.
                     print("Transcription skipped: no audio data produced (no voice detected)")
                     DispatchQueue.main.async {
                         self.realtimeStream?.close()
                         self.realtimeStream = nil
                         self.realtimeStreamFailed = false
                         self.hideRecordingOverlay()
+                        self.floatingChip?.flashNoAudioWarning(durationSeconds: 3.0)
                     }
                     return
                 }
