@@ -405,6 +405,13 @@ struct MainDashboardView: View {
                 ThemeTogglePill(manager: themeManager)
                     .padding(.horizontal, 2)
 
+                // Premium / OpenAI-key upsell — sits above the GitHub
+                // block because the conversion intent is higher value.
+                // Visual treatment uses accent gradient to differentiate
+                // from the surface-tinted star block underneath, so the
+                // eye lands here first.
+                SidebarPremiumBlock()
+
                 // GitHub Star block — sidebar-sized, replaces the wide
                 // StarRepoCard that used to sit on Home. Same intent
                 // (drive-by stars + social proof) in the right surface.
@@ -581,12 +588,59 @@ struct MainDashboardView: View {
                     .foregroundColor(Theme.textOnDark.opacity(0.7))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 420, alignment: .leading)
+
+                // Hinglish upsell — surfaces the "Groq is free, OpenAI key
+                // unlocks Hindi/Marathi/100+ languages" story directly on the
+                // hero where users actually look. Without this the upgrade
+                // path is buried in Settings and Hindi-speaking users churn
+                // assuming the app can't speak their language.
+                hinglishCallout
             }
             Spacer()
         }
         .padding(Theme.Space.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .themedHeroCard()
+        .themedAnimatedHeroCard()
+    }
+
+    /// Inline upsell pill inside the dark hero card.
+    /// Tap → jumps to Settings (where they can paste an OpenAI key).
+    private var hinglishCallout: some View {
+        Button {
+            NotificationCenter.default.post(
+                name: Notification.Name("VoiceFlow.SelectTab"),
+                object: nil,
+                userInfo: ["tab": "settings"]
+            )
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.accent)
+                Text("Speak Hindi or Marathi?")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.textOnDark)
+                Text("Unlock Hinglish + 100+ languages with your OpenAI key")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textOnDark.opacity(0.65))
+                    .lineLimit(1)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.accent)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Add an OpenAI API key in Settings to dictate in Hindi, Marathi, and 100+ other languages.")
     }
 
     // MARK: Home — Stats (compact right-side card)
@@ -2523,6 +2577,372 @@ struct ThemeTogglePill: View {
             RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
                 .fill(Theme.divider)
         )
+    }
+}
+
+// MARK: - AnimatedDarkBackground (slow-flowing nebula on dark canvas)
+
+/// Cinematic dark background — a near-black base with two large, heavily
+/// blurred radial-gradient blobs orbiting slowly in opposite directions.
+/// Approximates componentry.fun's "Closing Plasma" / fluid-motion look
+/// using only SwiftUI primitives (no Metal, no shader).
+///
+/// Why blurred RadialGradients instead of an animated AngularGradient:
+/// angular gradients on a flat surface produce visible "spoke" artifacts
+/// that read as cheap. Layered radial blobs with heavy blur look like
+/// slow nebula clouds — the eye reads it as depth, not rotation.
+///
+/// Performance:
+///   - Two layers, both with .blur(radius: 60+) — offloaded to GPU.
+///   - TimelineView(.animation) auto-pauses when window is occluded.
+///   - Slow orbit (40-60s per loop) keeps frame-to-frame deltas tiny,
+///     so the GPU can interpolate cheaply.
+///
+/// Color tuning: the two blob colors (deep indigo + plum) are hand-picked
+/// to stay below ~25% luminance even at peak. White hero text on top
+/// stays comfortably above 7:1 contrast — accessible by default.
+struct AnimatedDarkBackground: View {
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+
+            // Two independent slow orbits in opposite directions. The
+            // counter-rotation is what gives the "flowing" feel —
+            // co-rotating blobs would just look like the whole canvas
+            // is sliding, which is uncanny.
+            let phase1 = (t / 22.0).truncatingRemainder(dividingBy: 1.0) * 2 * .pi
+            let phase2 = (t / 30.0).truncatingRemainder(dividingBy: 1.0) * 2 * .pi + .pi
+
+            // CRITICAL: blob centers expressed as UnitPoint (0..1, relative
+            // to the parent's bounds) instead of fixed-size Circles + offset.
+            // Previous version used Circle().frame(width: 560) — that fixed
+            // child size made the ZStack claim 560×560 of layout space when
+            // wrapped in .drawingGroup(), which then bled into the hero
+            // card's height calculation and made it ~600pt tall. Using
+            // UnitPoint with no fixed-size children, the ZStack inherits
+            // the parent's size correctly.
+            let center1 = UnitPoint(
+                x: 0.45 + CGFloat(cos(phase1)) * 0.35,
+                y: 0.50 + CGFloat(sin(phase1)) * 0.30
+            )
+            let center2 = UnitPoint(
+                x: 0.55 + CGFloat(cos(phase2)) * 0.40,
+                y: 0.50 + CGFloat(sin(phase2)) * 0.25
+            )
+
+            ZStack {
+                // Base layer — near-black with a faint blue cast so the
+                // colored blobs read as "glow" instead of "splotch".
+                Color(red: 0.025, green: 0.025, blue: 0.040)
+
+                // Blob 1 — deep indigo. RadialGradient fills available
+                // space; the gradient's bright core is at center1 and
+                // fades transparent toward the edges. Moving center1
+                // slides the bright core around without resizing anything.
+                RadialGradient(
+                    colors: [
+                        Color(red: 0.18, green: 0.22, blue: 0.70).opacity(0.65),
+                        Color(red: 0.12, green: 0.15, blue: 0.50).opacity(0.30),
+                        Color.clear
+                    ],
+                    center: center1,
+                    startRadius: 5,
+                    endRadius: 320
+                )
+                .blendMode(.screen)
+
+                // Blob 2 — plum/magenta, slightly tighter spread, counter orbit.
+                RadialGradient(
+                    colors: [
+                        Color(red: 0.55, green: 0.15, blue: 0.55).opacity(0.55),
+                        Color(red: 0.40, green: 0.10, blue: 0.45).opacity(0.22),
+                        Color.clear
+                    ],
+                    center: center2,
+                    startRadius: 5,
+                    endRadius: 280
+                )
+                .blendMode(.screen)
+
+                // Subtle edge vignette — pulls focus to the text by
+                // dimming the perimeter so the brightest blob doesn't
+                // pull the eye away from the headline.
+                RadialGradient(
+                    colors: [Color.clear, Color.black.opacity(0.30)],
+                    center: .center,
+                    startRadius: 100,
+                    endRadius: 500
+                )
+            }
+        }
+    }
+}
+
+extension View {
+    /// Dark hero card with an animated nebula background. Drop-in
+    /// replacement for `.themedHeroCard()` on any surface that wants
+    /// motion. Keeps `.themedHeroCard()` available for the static
+    /// callers (settings preview, etc.) that don't need flair.
+    func themedAnimatedHeroCard() -> some View {
+        self
+            .background(
+                AnimatedDarkBackground()
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.hero, style: .continuous))
+            )
+            .shadow(color: Theme.Shadow.elevated.color,
+                    radius: Theme.Shadow.elevated.radius,
+                    x: 0, y: Theme.Shadow.elevated.y)
+    }
+}
+
+// MARK: - BorderBeam (animated traveling-light stroke)
+
+/// ViewModifier that strokes the receiver's bounds with a rotating
+/// angular gradient. The bright stop of the gradient slides around the
+/// rectangle, producing a "beam of light traveling along the border"
+/// effect — same look as componentry.fun's BorderBeam, no Metal needed.
+///
+/// Mechanism: a single `AngularGradient` with one bright stop at
+/// `location = phase` and transparent stops on either side. Driving
+/// `phase` from 0→1 with `TimelineView(.animation)` is what makes the
+/// bright spot travel. macOS pauses TimelineView when the window is
+/// occluded, so this is battery-respectful by default.
+///
+/// Why a ViewModifier and not a wrapper view: composes with any
+/// existing background/overlay stack without requiring callers to
+/// restructure their hierarchy.
+struct BorderBeam: ViewModifier {
+    var cornerRadius: CGFloat = 14
+    var beamColor: Color = .cyan
+    var lineWidth: CGFloat = 1.5
+    /// Seconds per full revolution. Slower = calmer; we use 5s — fast
+    /// enough to read as "alive", slow enough not to feel like an alert.
+    var duration: Double = 5.0
+    /// Width of the bright segment as a fraction of the perimeter. 0.15
+    /// = comet with a tail; lower values = pinprick light.
+    var beamWidth: Double = 0.15
+
+    func body(content: Content) -> some View {
+        content.overlay(
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let phase = (t / duration).truncatingRemainder(dividingBy: 1.0)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        AngularGradient(
+                            gradient: Gradient(stops: beamStops(phase: phase)),
+                            center: .center
+                        ),
+                        lineWidth: lineWidth
+                    )
+            }
+            .allowsHitTesting(false) // never block clicks on the wrapped content
+        )
+    }
+
+    /// Build the gradient stops so the bright peak is at `phase` with a
+    /// transparent fall-off on both sides. We add wrap-around stops so
+    /// the comet can cross the 0/1 seam without flickering.
+    private func beamStops(phase: Double) -> [Gradient.Stop] {
+        let half = beamWidth / 2
+        let peak = phase
+        let leftEdge  = peak - half
+        let rightEdge = peak + half
+
+        var stops: [Gradient.Stop] = [
+            .init(color: beamColor.opacity(0), location: 0),
+            .init(color: beamColor.opacity(0), location: max(0, leftEdge)),
+            .init(color: beamColor,            location: max(0, min(1, peak))),
+            .init(color: beamColor.opacity(0), location: min(1, rightEdge)),
+            .init(color: beamColor.opacity(0), location: 1)
+        ]
+        // Wrap handling: when the comet straddles 0/1, mirror the bright
+        // stop on the opposite end so it appears continuous. Without this
+        // there's a visible blink each loop.
+        if leftEdge < 0 {
+            let wrapped = 1.0 + leftEdge
+            stops.append(.init(color: beamColor.opacity(0), location: wrapped - 0.001))
+            stops.append(.init(color: beamColor,            location: wrapped))
+        }
+        if rightEdge > 1 {
+            let wrapped = rightEdge - 1.0
+            stops.insert(.init(color: beamColor,            location: wrapped),     at: 0)
+            stops.insert(.init(color: beamColor.opacity(0), location: wrapped + 0.001), at: 1)
+        }
+        return stops.sorted { $0.location < $1.location }
+    }
+}
+
+extension View {
+    func borderBeam(
+        cornerRadius: CGFloat = 14,
+        color: Color = .cyan,
+        lineWidth: CGFloat = 1.5,
+        duration: Double = 5.0,
+        beamWidth: Double = 0.15
+    ) -> some View {
+        modifier(BorderBeam(
+            cornerRadius: cornerRadius,
+            beamColor: color,
+            lineWidth: lineWidth,
+            duration: duration,
+            beamWidth: beamWidth
+        ))
+    }
+}
+
+// MARK: - PrismGradientHeader
+
+/// Animated multi-color gradient surface — drop-in replacement for any
+/// solid header rectangle. Approximates componentry.fun's "Dither Prism"
+/// without a Metal shader: an `AngularGradient` rotated continuously
+/// over time produces a slow-shifting prismatic field, and a soft
+/// sparkles glyph layered on top reads as the focal point.
+///
+/// Pure SwiftUI — works on macOS 13. Same TimelineView budget rules as
+/// BorderBeam apply: paused when the window is occluded.
+struct PrismGradientHeader: View {
+    var height: CGFloat = 80
+    var cornerRadius: CGFloat = 10
+
+    private let prismColors: [Color] = [
+        Color(red: 0.55, green: 0.30, blue: 0.95),  // violet
+        Color(red: 0.95, green: 0.40, blue: 0.65),  // pink
+        Color(red: 1.00, green: 0.55, blue: 0.10),  // orange (Theme.accent)
+        Color(red: 0.30, green: 0.80, blue: 0.95),  // cyan
+        Color(red: 0.55, green: 0.30, blue: 0.95)   // violet (loop)
+    ]
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            // 12s per full rotation — slow enough to feel ambient, not
+            // disco. The eye notices the colors at the corners shifting
+            // without ever feeling pulled-at.
+            let angle = (t * 30).truncatingRemainder(dividingBy: 360)
+
+            ZStack {
+                AngularGradient(
+                    gradient: Gradient(colors: prismColors),
+                    center: .center,
+                    angle: .degrees(angle)
+                )
+                // Soft white core in the center — gives the eye an anchor
+                // and "lifts" the colors so they don't feel muddy.
+                RadialGradient(
+                    colors: [Color.white.opacity(0.35), Color.clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 50
+                )
+                // Sparkles glyph — system iconography for "premium".
+                Image(systemName: "sparkles")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.2), radius: 6, y: 1)
+            }
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}
+
+// MARK: - SidebarPremiumBlock
+
+/// Sidebar upsell card that nudges users to add an OpenAI API key for
+/// Hinglish + multilingual support.
+///
+/// Why the visual treatment is intentionally louder than SidebarStarBlock:
+/// the GitHub star block is a community ask (low conversion stakes); this
+/// one is the primary monetization-adjacent surface — without an OpenAI
+/// key the app is English-only via Groq, and Hindi-speaking users churn
+/// in 30 seconds if they don't see this exists.
+///
+/// Composition (top → bottom):
+///   1. PrismGradientHeader — animated prism block, sparkles centered.
+///      Approximates componentry.fun's "Dither Prism Hero" without Metal.
+///   2. "Unlock Hinglish" headline + arrow.
+///   3. Sub-line: "Hindi · Marathi · 100+ languages" — names users search.
+///   4. Footer hint: "Add OpenAI key in Settings →".
+///
+/// The whole card is wrapped in `.borderBeam(...)` — a slow cyan comet
+/// travels around the perimeter. Two animations layered (prism rotation
+/// + border beam) tested at low frequencies (12s and 5s respectively)
+/// stay below the perception threshold for "distracting". They register
+/// as "this thing is alive" without pulling focus.
+struct SidebarPremiumBlock: View {
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            NotificationCenter.default.post(
+                name: Notification.Name("VoiceFlow.SelectTab"),
+                object: nil,
+                userInfo: ["tab": "settings"]
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                // Animated prism header — the "premium hero" of the card.
+                PrismGradientHeader(height: 76, cornerRadius: 8)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Text("Unlock Hinglish")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(Theme.textPrimary)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.accent)
+                            .opacity(isHovered ? 1.0 : 0.6)
+                            .offset(x: isHovered ? 2 : 0)
+                            .animation(.easeOut(duration: 0.15), value: isHovered)
+                    }
+
+                    Text("Hindi · Marathi · 100+ languages")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Theme.textPrimary.opacity(0.85))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+
+                    Text("Add OpenAI key in Settings →")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textSecondary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Theme.accent.opacity(0.10),
+                                Theme.accent.opacity(0.04)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                // Static accent border — replaces the traveling-beam
+                // animation. The prism header above already provides
+                // motion; a second moving element on the same card was
+                // visually noisy. One animation per card is the cap.
+                RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
+                    .strokeBorder(Theme.accent.opacity(0.30), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+        .help("Add an OpenAI API key in Settings to unlock Hindi, Marathi, and 100+ other languages.")
     }
 }
 

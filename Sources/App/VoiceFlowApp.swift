@@ -578,8 +578,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func configureDefaultSettings() {
+        // Provider — Groq beats OpenAI as the free-tier default because we
+        // ship an embedded Groq beta key. Without this seed the UI would
+        // read OpenAI as the default (its fallback string in 3 places),
+        // contradict TranscriptionProvider.current (which now defaults to
+        // Groq), and surface "API key not present" on the first dictation.
+        // Seeding here makes ALL three reader-fallbacks moot.
+        if UserDefaults.standard.string(forKey: "transcription_provider") == nil {
+            UserDefaults.standard.set(TranscriptionProvider.groq.rawValue, forKey: "transcription_provider")
+        }
         if UserDefaults.standard.string(forKey: "output_mode") == nil {
-            UserDefaults.standard.set(TranscriptOutputStyle.cleanHinglish.rawValue, forKey: "output_mode")
+            // Default to .clean (works on the free Groq tier) rather than
+            // .cleanHinglish (which silently requires an OpenAI key for
+            // Hindi/Marathi transliteration and will throw "API key not
+            // present" on the very first dictation after onboarding).
+            // Hinglish is now an opt-in upsell — users who add an OpenAI
+            // key flip the style themselves via Settings, prompted by the
+            // dashboard's "Unlock Hinglish" CTA.
+            UserDefaults.standard.set(TranscriptOutputStyle.clean.rawValue, forKey: "output_mode")
         }
         if UserDefaults.standard.string(forKey: "processing_mode") == nil {
             UserDefaults.standard.set(TranscriptProcessingMode.dictation.rawValue, forKey: "processing_mode")
