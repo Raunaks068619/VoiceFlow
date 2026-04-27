@@ -171,11 +171,23 @@ class AudioRecorder: NSObject {
                 selectedBuffers = Array(self.rawAudioBuffer[start...end])
                 print("Recording stopped (voiced range \(first)...\(last) of \(self.rawAudioBuffer.count), trimmed to \(start)...\(end), grace=\(self.stopGraceMilliseconds)ms)")
             } else {
-                // No voice activity detected at all — user probably tapped Fn
-                // by mistake. Send the raw audio anyway; Whisper will return
-                // empty and the empty-guard in WhisperService drops it.
-                selectedBuffers = self.rawAudioBuffer
-                print("Recording stopped (no voice detected, sending raw audio)")
+                // Hard gate: no buffer crossed the noise threshold during the
+                // entire recording window. Sending raw silence to Whisper is
+                // worse than useless — it reliably produces a hallucination
+                // (e.g. "Transliterate Hindi, Marathi, Marathi, Marathi...")
+                // because Whisper falls back to echoing fragments of its own
+                // prompt when it hears nothing. Returning nil short-circuits
+                // the batch pipeline cleanly: the caller already handles
+                // nil-audio as a no-op (see VoiceFlowApp.stopRecording, the
+                // `audioData == nil` branch).
+                //
+                // The realtime stream path is independent — if streaming was
+                // active during this attempt, it produced its own (likely
+                // hallucinated) output and is gated separately by the
+                // hallucination filter in WhisperService.
+                print("Recording stopped (no voice detected — dropping recording, no STT call)")
+                completion(nil)
+                return
             }
 
             let audioData = self.convertBuffersToWAV(from: selectedBuffers)

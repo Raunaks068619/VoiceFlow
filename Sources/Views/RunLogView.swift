@@ -307,7 +307,13 @@ struct RunDetailView: View {
     @State private var audioPlayer: AVAudioPlayer?
     @State private var isPlaying = false
     @State private var showTranscriptionPrompt = false
-    @State private var showPostProcessPrompt = false
+    // Default expanded — the prompt is the highest-debug-value piece of
+    // info on this card. Hiding it behind a click added one round trip of
+    // friction every time someone opened a run to debug *why* the output
+    // looked the way it did. With the fast-path skip marker now showing
+    // in this same field, we ALWAYS want this content visible — it's the
+    // single source of truth for "what (or nothing) was done to my text."
+    @State private var showPostProcessPrompt = true
 
     var body: some View {
         Group {

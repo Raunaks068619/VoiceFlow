@@ -443,12 +443,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self?.refreshChipPermissionState()
         }
 
+        // Onboarding gate — three-way decision based on prefs + live TCC state:
+        //
+        //   1. has_completed_onboarding=false  → first-launch ever, run full
+        //      Welcome flow.
+        //   2. has_completed_onboarding=true BUT any required permission is
+        //      missing → user reinstalled, OS-upgraded, or revoked a perm
+        //      between sessions. Jump straight to the Permissions step so
+        //      they can re-grant without re-watching the welcome screens.
+        //   3. has_completed_onboarding=true and all perms granted → silent
+        //      menu-bar launch.
+        //
+        // Why gate on permissions and not just the prefs flag: ad-hoc signed
+        // builds lose TCC entries on every cdhash change (i.e. every brew
+        // upgrade). Without this check, a user who ran onboarding once would
+        // never see it again — even after their permissions silently broke
+        // — and would just see a chip that does nothing on Fn-press. This
+        // matches Cap's behavior: any time perms are missing, walk the user
+        // back through the grant flow.
         let hasCompleted = UserDefaults.standard.bool(forKey: "has_completed_onboarding")
+        let allPermsGranted = permissionService.allRequiredGranted
         if !hasCompleted {
-            // First launch: open onboarding window and let the user drive.
-            // The guided cards inside the window will trigger each system
-            // prompt individually when the user clicks "Grant".
             openOnboardingIfNeeded()
+        } else if !allPermsGranted {
+            openOnboardingIfNeeded(force: true, initialStep: .permissions)
         }
 
         // Floating chip — always-on bottom-of-screen presence. We install
@@ -791,6 +809,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     self?.openSettings()
                 },
                 onDone: { [weak self] in
+                    let wasFirstRun = !UserDefaults.standard.bool(forKey: "has_completed_onboarding")
                     UserDefaults.standard.set(true, forKey: "has_completed_onboarding")
                     self?.onboardingWindow?.close()
                     self?.onboardingWindow = nil
@@ -801,6 +820,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     // walked through the permissions step.
                     self?.installFloatingChip()
                     self?.refreshChipPermissionState()
+                    // First-run only: surface the dashboard once so the user
+                    // discovers it exists. Without this, onboarding closes
+                    // and the user is left with just a tiny chip — they have
+                    // no idea where to find Run Log, Settings, etc. After
+                    // this single first-run reveal, returning launches stay
+                    // menu-bar-only (the Raycast/Alfred convention).
+                    //
+                    // Re-grant flows (force=true with initialStep=.permissions)
+                    // skip this — those users already know the dashboard
+                    // exists, they're just here to fix a missing TCC entry.
+                    if wasFirstRun {
+                        self?.openMainWindow()
+                    }
                 }
             )
             let hostingController = NSHostingController(rootView: onboardingView)
@@ -981,8 +1013,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self.audioRecorder?.stopRecording { [weak self] audioData in
                 guard let self else { return }
                 guard let audioData = audioData else {
-                    print("Transcription skipped: no audio data produced")
-                    DispatchQueue.main.async { self.hideRecordingOverlay() }
+                    // No voiced audio captured — AudioRecorder gates this
+                    // upstream now (see its stopRecording: when no buffer
+                    // crosses the noise threshold, it returns nil rather
+                    // than handing us silent audio that Whisper would
+                    // hallucinate over).
+                    //
+                    // We must also tear down any realtime stream that was
+                    // running during this attempt; otherwise the WebSocket
+                    // stays open, holding a session slot until network
+                    // timeout. setupRealtimeStreamIfEnabled() also clears
+                    // it at the START of the next session, but that's too
+                    // late if the user starts another recording quickly.
+                    print("Transcription skipped: no audio data produced (no voice detected)")
+                    DispatchQueue.main.async {
+                        self.realtimeStream?.close()
+                        self.realtimeStream = nil
+                        self.realtimeStreamFailed = false
+                        self.hideRecordingOverlay()
+                    }
                     return
                 }
 
