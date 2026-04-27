@@ -91,7 +91,7 @@ fi
 # This matters: DMG contents get quarantined on download, and a machine-local
 # ad-hoc signature at least prevents the "identity changed" TCC invalidation.
 echo "==> Ad-hoc signing app bundle"
-codesign --force --deep --options runtime --sign - "${STAGE_DIR}/VoiceFlow.app"
+codesign --force --deep --options runtime --entitlements Resources/VoiceFlow.entitlements --sign - "${STAGE_DIR}/VoiceFlow.app"
 
 echo "==> Creating unsigned DMG"
 hdiutil create -volname "VoiceFlow" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_PATH}"

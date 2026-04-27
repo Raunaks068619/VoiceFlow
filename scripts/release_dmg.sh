@@ -138,7 +138,7 @@ if [[ "${SIGNING_MODE}" == "notarized" || "${SIGNING_MODE}" == "signed_only" ]];
   codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 else
   echo "==> Ad-hoc signing (local testing only)"
-  codesign --force --deep --options runtime --sign - "${APP_PATH}"
+  codesign --force --deep --options runtime --entitlements "${ENTITLEMENTS}" --sign - "${APP_PATH}"
 fi
 
 # -----------------------------------------------------------------------------

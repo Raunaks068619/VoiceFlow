@@ -1,34 +1,59 @@
 #!/usr/bin/env bash
-# Double-click this file after installing VoiceFlow to /Applications.
-# It strips Gatekeeper quarantine and re-applies a local ad-hoc signature so
-# microphone / accessibility / input-monitoring permissions persist.
+# ------------------------------------------------------------------------------
+# VoiceFlow — First Run Helper
+# ------------------------------------------------------------------------------
+# Double-click this file ONCE after dragging VoiceFlow.app to /Applications.
+#
+# What it does:
+#   1. Strips Gatekeeper quarantine flag (so unsigned/adhoc app can launch)
+#   2. Resets any stale TCC entries from prior installs
+#   3. Launches VoiceFlow
+#
+# What it DOES NOT do:
+#   - Does NOT re-sign the app. The DMG-shipped app is already signed
+#     adhoc with the correct entitlements (mic, accessibility, etc).
+#     Re-signing here would STRIP entitlements and break permissions.
+# -----------------------------------------------------------------------------
 
 set -euo pipefail
 
 APP="/Applications/VoiceFlow.app"
+BUNDLE_ID="com.voiceflow.app"
 
 if [[ ! -d "$APP" ]]; then
   echo "❌ VoiceFlow.app not found at $APP"
-  echo "   Drag VoiceFlow.app to /Applications first, then run this again."
+  echo "   Drag VoiceFlow.app into Applications first, then run this again."
+  echo ""
   read -n 1 -s -r -p "Press any key to close..."
   exit 1
 fi
 
-echo "==> Stripping quarantine flag"
-xattr -dr com.apple.quarantine "$APP" || true
+echo "==> Quitting any running VoiceFlow instance"
+pkill -x VoiceFlow 2>/dev/null || true
+sleep 1
 
-echo "==> Re-signing locally (ad-hoc)"
-codesign --force --deep --sign - "$APP"
+echo "==> Stripping Gatekeeper quarantine flag"
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+xattr -cr "$APP" 2>/dev/null || true
 
-echo "==> Resetting TCC entries (optional, safe)"
-tccutil reset Microphone com.voiceflow.app 2>/dev/null || true
-tccutil reset Accessibility com.voiceflow.app 2>/dev/null || true
-tccutil reset ListenEvent com.voiceflow.app 2>/dev/null || true
+echo "==> Verifying entitlements survived (sanity check)"
+if codesign -d --entitlements - "$APP" 2>&1 | grep -q audio-input; then
+  echo "   ✅ audio-input entitlement present"
+else
+  echo "   ⚠️  audio-input entitlement MISSING — please report this build"
+fi
+
+echo "==> Resetting any stale TCC permission state"
+tccutil reset Microphone "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset ListenEvent "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset SpeechRecognition "$BUNDLE_ID" 2>/dev/null || true
 
 echo ""
-echo "✅ Done. Launching VoiceFlow..."
+echo "✅ Setup complete. Launching VoiceFlow..."
 open "$APP"
 
 echo ""
-echo "When the menu-bar icon appears, grant the 3 permissions in onboarding."
+echo "When the menu-bar icon appears, grant the requested permissions in onboarding."
+echo ""
 read -n 1 -s -r -p "Press any key to close this window..."

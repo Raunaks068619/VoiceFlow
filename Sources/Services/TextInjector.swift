@@ -125,12 +125,46 @@ class TextInjector {
         print("Restored previous clipboard")
     }
 
-    /// AX role check on the currently-focused element. Generous by design —
-    /// covers native, Electron (which often returns AXTextArea/AXWebArea),
-    /// and code-editor edge cases (which sometimes hide behind AXScrollArea
-    /// or AXGroup). Returns true on doubt; the worst case is the paste
-    /// goes nowhere and the user pastes manually — better than blocking
-    /// legit dictations.
+    /// AX role check on the currently-focused element.
+    ///
+    /// History: this was an *allowlist* (AXTextField, AXTextArea, AXScrollArea,
+    /// AXGroup, AXOutline, ...). The allowlist approach has a fatal flaw —
+    /// Electron apps (Claude desktop, VS Code, Cursor, Notion, Linear) and
+    /// many web wrappers return roles that aren't in the list even when the
+    /// user is staring at a blinking cursor in a real text input. Result:
+    /// users see a false "Click a textbox" warning while their cursor is
+    /// actively in a textbox. That breaks trust — the app is lying about
+    /// what it can see.
+    ///
+    /// New approach: *denylist*. Only suppress when the role is something
+    /// pasting clearly can't help with (button clicks, static labels, images,
+    /// menus). For everything else — including AX-permission failures — we
+    /// optimistically try the paste. If the keystroke lands nowhere, the
+    /// user notices and Cmd+V's manually. That's a strictly better failure
+    /// mode than a wrongful "you don't have a textbox focused" lecture when
+    /// they obviously do.
+    ///
+    /// Roles confirmed-bad-paste-target — keep this list short. Adding a
+    /// role here means we WILL show the warning, so be sure it never hosts
+    /// a real text input on any platform/version.
+    private static let nonTextInputRoles: Set<String> = [
+        "AXButton",          // clicking a button
+        "AXImage",           // image element
+        "AXStaticText",      // label text, not editable
+        "AXMenuItem",        // menu open
+        "AXMenu",
+        "AXMenuBar",
+        "AXMenuBarItem",
+        "AXMenuButton",
+        "AXLink",            // hyperlink
+        "AXCheckBox",
+        "AXRadioButton",
+        "AXSlider",
+        "AXIncrementor",
+        "AXScrollBar",
+        "AXDisclosureTriangle"
+    ]
+
     private static func focusedElementLooksLikeTextInput() -> Bool {
         let system = AXUIElementCreateSystemWide()
         var focused: AnyObject?
@@ -139,30 +173,33 @@ class TextInjector {
             kAXFocusedUIElementAttribute as CFString,
             &focused
         )
-        guard result == .success, let element = focused else { return false }
+        // AX query failed — could be missing accessibility permission or a
+        // sandboxed app refusing introspection. Optimistically allow paste:
+        // if AX is broken, the cmd+v keystroke we're about to send is the
+        // user's best chance of getting their transcript anyway.
+        guard result == .success, let element = focused else {
+            print("AX focus query failed — allowing paste (denylist semantics)")
+            return true
+        }
 
         var role: AnyObject?
         AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &role)
-        guard let roleString = role as? String else { return false }
+        guard let roleString = role as? String else {
+            // Got a focused element but couldn't read its role. Same logic:
+            // unknown ≠ confirmed-bad. Allow.
+            return true
+        }
 
-        // Definitely text inputs.
-        let definitelyText: Set<String> = [
-            "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXWebArea"
-        ]
-        if definitelyText.contains(roleString) { return true }
+        if Self.nonTextInputRoles.contains(roleString) {
+            print("Suppressing paste — focused role is \(roleString) (non-text)")
+            return false
+        }
 
-        // Probable text inputs — code editors, terminals, Electron quirks.
-        // VS Code's Monaco editor exposes as AXTextArea normally but on
-        // some configurations as AXScrollArea. iTerm / Terminal expose
-        // as AXScrollArea. Electron apps with custom focus management
-        // often return AXGroup. Generous coverage here costs us only
-        // failed pastes (cheap), saves us from blocking real dictations.
-        let probablyText: Set<String> = [
-            "AXScrollArea", "AXGroup", "AXOutline"
-        ]
-        if probablyText.contains(roleString) { return true }
-
-        return false
+        // Anything else — AXTextField, AXTextArea, AXWebArea, AXScrollArea,
+        // AXGroup, AXOutline, AXUnknown, custom Electron roles, you name it
+        // — gets the paste attempt. We'd rather try and fail silently than
+        // refuse to try at all.
+        return true
     }
 
     /// True when VoiceFlow is the frontmost application. We compare by bundle
