@@ -44,6 +44,8 @@
 		11AA0000000000000000000F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000F /* InsightsView.swift */; };
 		11AA00000000000000000010 /* MagicWordsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000010 /* MagicWordsSettingsView.swift */; };
 		11AA00000000000000000011 /* DevModeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000011 /* DevModeSettingsView.swift */; };
+		11AA00000000000000000012 /* MicrophoneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000012 /* MicrophoneProbe.swift */; };
+		11AA00000000000000000013 /* UserVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000013 /* UserVocabulary.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -87,6 +89,8 @@
 		11BB0000000000000000000F /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		11BB00000000000000000010 /* MagicWordsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWordsSettingsView.swift; sourceTree = "<group>"; };
 		11BB00000000000000000011 /* DevModeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevModeSettingsView.swift; sourceTree = "<group>"; };
+		11BB00000000000000000012 /* MicrophoneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneProbe.swift; sourceTree = "<group>"; };
+		11BB00000000000000000013 /* UserVocabulary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserVocabulary.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -118,6 +122,8 @@
 				FF22222222222222FFFFFFFF /* LocalModelDetector.swift */,
 				11BB00000000000000000007 /* MagicWordResolver.swift */,
 				11BB00000000000000000006 /* MagicWordStore.swift */,
+				11BB00000000000000000012 /* MicrophoneProbe.swift */,
+				11BB00000000000000000013 /* UserVocabulary.swift */,
 				EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */,
 				CC22222222222222CCCCCCCC /* RunRecorder.swift */,
 				BB22222222222222BBBBBBBB /* RunStore.swift */,
@@ -309,6 +315,8 @@
 				11AA0000000000000000000F /* InsightsView.swift in Sources */,
 				11AA00000000000000000010 /* MagicWordsSettingsView.swift in Sources */,
 				11AA00000000000000000011 /* DevModeSettingsView.swift in Sources */,
+				11AA00000000000000000012 /* MicrophoneProbe.swift in Sources */,
+				11AA00000000000000000013 /* UserVocabulary.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
