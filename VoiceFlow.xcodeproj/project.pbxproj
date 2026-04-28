@@ -27,6 +27,25 @@
 		EE44444444444444EEEEEEEE /* RealtimeTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */; };
 		FF44444444444444FFFFFFFF /* GitHubService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF55555555555555FFFFFFFF /* GitHubService.swift */; };
 		AA44444444444444AABBAABB /* StarRepoCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA55555555555555AABBAABB /* StarRepoCard.swift */; };
+		11AA00000000000000000001 /* Context.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000001 /* Context.swift */; };
+		11AA00000000000000000002 /* TransformerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000002 /* TransformerProfile.swift */; };
+		11AA00000000000000000003 /* MagicWord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000003 /* MagicWord.swift */; };
+		11AA00000000000000000004 /* ContextProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000004 /* ContextProvider.swift */; };
+		11AA00000000000000000005 /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000005 /* LLMService.swift */; };
+		11AA00000000000000000006 /* MagicWordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000006 /* MagicWordStore.swift */; };
+		11AA00000000000000000007 /* MagicWordResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000007 /* MagicWordResolver.swift */; };
+		11AA00000000000000000008 /* TransformerRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000008 /* TransformerRouter.swift */; };
+		11AA00000000000000000009 /* StandardCleanupProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000009 /* StandardCleanupProfile.swift */; };
+		11AA0000000000000000000A /* MagicWordExpansionProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000A /* MagicWordExpansionProfile.swift */; };
+		11AA0000000000000000000B /* DeveloperModeProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000B /* DeveloperModeProfile.swift */; };
+		11AA0000000000000000000C /* PromptEngineerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000C /* PromptEngineerProfile.swift */; };
+		11AA0000000000000000000D /* VariableRecognitionProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000D /* VariableRecognitionProfile.swift */; };
+		11AA0000000000000000000E /* AgenticDeveloperModeProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000E /* AgenticDeveloperModeProfile.swift */; };
+		11AA0000000000000000000F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB0000000000000000000F /* InsightsView.swift */; };
+		11AA00000000000000000010 /* MagicWordsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000010 /* MagicWordsSettingsView.swift */; };
+		11AA00000000000000000011 /* DevModeSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000011 /* DevModeSettingsView.swift */; };
+		11AA00000000000000000012 /* MicrophoneProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000012 /* MicrophoneProbe.swift */; };
+		11AA00000000000000000013 /* UserVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11BB00000000000000000013 /* UserVocabulary.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,6 +72,25 @@
 		EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeTranscriptionService.swift; sourceTree = "<group>"; };
 		FF55555555555555FFFFFFFF /* GitHubService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubService.swift; sourceTree = "<group>"; };
 		AA55555555555555AABBAABB /* StarRepoCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarRepoCard.swift; sourceTree = "<group>"; };
+		11BB00000000000000000001 /* Context.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Context.swift; sourceTree = "<group>"; };
+		11BB00000000000000000002 /* TransformerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransformerProfile.swift; sourceTree = "<group>"; };
+		11BB00000000000000000003 /* MagicWord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWord.swift; sourceTree = "<group>"; };
+		11BB00000000000000000004 /* ContextProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextProvider.swift; sourceTree = "<group>"; };
+		11BB00000000000000000005 /* LLMService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMService.swift; sourceTree = "<group>"; };
+		11BB00000000000000000006 /* MagicWordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWordStore.swift; sourceTree = "<group>"; };
+		11BB00000000000000000007 /* MagicWordResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWordResolver.swift; sourceTree = "<group>"; };
+		11BB00000000000000000008 /* TransformerRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransformerRouter.swift; sourceTree = "<group>"; };
+		11BB00000000000000000009 /* StandardCleanupProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardCleanupProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000A /* MagicWordExpansionProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWordExpansionProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000B /* DeveloperModeProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperModeProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000C /* PromptEngineerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptEngineerProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000D /* VariableRecognitionProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VariableRecognitionProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000E /* AgenticDeveloperModeProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgenticDeveloperModeProfile.swift; sourceTree = "<group>"; };
+		11BB0000000000000000000F /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
+		11BB00000000000000000010 /* MagicWordsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicWordsSettingsView.swift; sourceTree = "<group>"; };
+		11BB00000000000000000011 /* DevModeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevModeSettingsView.swift; sourceTree = "<group>"; };
+		11BB00000000000000000012 /* MicrophoneProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneProbe.swift; sourceTree = "<group>"; };
+		11BB00000000000000000013 /* UserVocabulary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserVocabulary.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -77,16 +115,37 @@
 			isa = PBXGroup;
 			children = (
 				FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */,
+				11BB00000000000000000004 /* ContextProvider.swift */,
 				FF55555555555555FFFFFFFF /* GitHubService.swift */,
 				FC498E736D1087FB9B14187C /* HotKeyListener.swift */,
+				11BB00000000000000000005 /* LLMService.swift */,
 				FF22222222222222FFFFFFFF /* LocalModelDetector.swift */,
+				11BB00000000000000000007 /* MagicWordResolver.swift */,
+				11BB00000000000000000006 /* MagicWordStore.swift */,
+				11BB00000000000000000012 /* MicrophoneProbe.swift */,
+				11BB00000000000000000013 /* UserVocabulary.swift */,
 				EE55555555555555EEEEEEEE /* RealtimeTranscriptionService.swift */,
 				CC22222222222222CCCCCCCC /* RunRecorder.swift */,
 				BB22222222222222BBBBBBBB /* RunStore.swift */,
 				16A5AE6AF5A3ECD86B1C2456 /* TextInjector.swift */,
+				11BB00000000000000000008 /* TransformerRouter.swift */,
 				87966BCEB2D8E8154D5CAA5A /* WhisperService.swift */,
+				11CC00000000000000000001 /* Profiles */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		11CC00000000000000000001 /* Profiles */ = {
+			isa = PBXGroup;
+			children = (
+				11BB0000000000000000000E /* AgenticDeveloperModeProfile.swift */,
+				11BB0000000000000000000B /* DeveloperModeProfile.swift */,
+				11BB0000000000000000000A /* MagicWordExpansionProfile.swift */,
+				11BB0000000000000000000C /* PromptEngineerProfile.swift */,
+				11BB00000000000000000009 /* StandardCleanupProfile.swift */,
+				11BB0000000000000000000D /* VariableRecognitionProfile.swift */,
+			);
+			path = Profiles;
 			sourceTree = "<group>";
 		};
 		AA66666666666666AABBAABB /* Components */ = {
@@ -102,8 +161,11 @@
 			children = (
 				AA66666666666666AABBAABB /* Components */,
 				FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */,
+				11BB00000000000000000011 /* DevModeSettingsView.swift */,
 				545269499F1DC1CA34A9BCD1 /* InputMonitoringGuideView.swift */,
+				11BB0000000000000000000F /* InsightsView.swift */,
 				C52A4B39FDE4068BB6AF34AD /* MainDashboardView.swift */,
+				11BB00000000000000000010 /* MagicWordsSettingsView.swift */,
 				707DE76A41F81D64547A4653 /* MenuBarView.swift */,
 				39F5D0D1AE26FA25F5A3906F /* RecordingOverlayWindow.swift */,
 				DD22222222222222DDDDDDDD /* RunLogView.swift */,
@@ -123,7 +185,10 @@
 		EE33333333333333EEEEEEEE /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				11BB00000000000000000001 /* Context.swift */,
+				11BB00000000000000000003 /* MagicWord.swift */,
 				AA22222222222222AAAAAAAA /* RunModel.swift */,
+				11BB00000000000000000002 /* TransformerProfile.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -233,6 +298,25 @@
 				EE44444444444444EEEEEEEE /* RealtimeTranscriptionService.swift in Sources */,
 				FF44444444444444FFFFFFFF /* GitHubService.swift in Sources */,
 				AA44444444444444AABBAABB /* StarRepoCard.swift in Sources */,
+				11AA00000000000000000001 /* Context.swift in Sources */,
+				11AA00000000000000000002 /* TransformerProfile.swift in Sources */,
+				11AA00000000000000000003 /* MagicWord.swift in Sources */,
+				11AA00000000000000000004 /* ContextProvider.swift in Sources */,
+				11AA00000000000000000005 /* LLMService.swift in Sources */,
+				11AA00000000000000000006 /* MagicWordStore.swift in Sources */,
+				11AA00000000000000000007 /* MagicWordResolver.swift in Sources */,
+				11AA00000000000000000008 /* TransformerRouter.swift in Sources */,
+				11AA00000000000000000009 /* StandardCleanupProfile.swift in Sources */,
+				11AA0000000000000000000A /* MagicWordExpansionProfile.swift in Sources */,
+				11AA0000000000000000000B /* DeveloperModeProfile.swift in Sources */,
+				11AA0000000000000000000C /* PromptEngineerProfile.swift in Sources */,
+				11AA0000000000000000000D /* VariableRecognitionProfile.swift in Sources */,
+				11AA0000000000000000000E /* AgenticDeveloperModeProfile.swift in Sources */,
+				11AA0000000000000000000F /* InsightsView.swift in Sources */,
+				11AA00000000000000000010 /* MagicWordsSettingsView.swift in Sources */,
+				11AA00000000000000000011 /* DevModeSettingsView.swift in Sources */,
+				11AA00000000000000000012 /* MicrophoneProbe.swift in Sources */,
+				11AA00000000000000000013 /* UserVocabulary.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

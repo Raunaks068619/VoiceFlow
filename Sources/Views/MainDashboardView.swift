@@ -238,6 +238,92 @@ final class RecordingStateStore: ObservableObject {
     @Published var isRecording: Bool = false
 }
 
+/// Horizontal mic-level meter with an overlaid threshold tick.
+///
+/// Both `level` and `threshold` are in the same normalized 0...1 space
+/// (see `MicrophoneProbe.normalizedThreshold(_:)` for the curve), so the
+/// tick's position is directly comparable to the live fill — i.e. the
+/// user can SEE whether their voice peaks past the threshold without
+/// having to reason about raw 0.015 RMS values.
+///
+/// Color semantics: when the live level passes the threshold, the fill
+/// switches from accent (orange) to success (green). Mirrors the floating
+/// chip's "I heard you" state.
+struct LevelMeterView: View {
+    let level: Float        // 0...1, normalized
+    let threshold: Float    // 0...1, normalized (same scale as level)
+    let isActive: Bool
+
+    private let trackHeight: CGFloat = 22
+    private let segmentCount = 32
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let fillWidth = max(0, w * CGFloat(min(max(level, 0), 1)))
+            let tickX = w * CGFloat(min(max(threshold, 0), 1))
+            let aboveThreshold = level >= threshold && level > 0.02
+
+            ZStack(alignment: .leading) {
+                // Track — segmented for a hint of "level meter" texture
+                // without going all the way to per-LED bars (those steal
+                // visual attention from the threshold tick).
+                HStack(spacing: 2) {
+                    ForEach(0..<segmentCount, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Theme.divider.opacity(0.6))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .frame(height: trackHeight)
+
+                // Fill — single rounded rect over the track, masked to
+                // current width. Color shifts when level > threshold so
+                // the user gets unambiguous "yes this would record" feedback.
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(aboveThreshold ? Theme.success : Theme.accent)
+                    .frame(width: fillWidth, height: trackHeight)
+                    .opacity(isActive ? 1.0 : 0.55)
+                    .animation(.easeOut(duration: 0.08), value: level)
+
+                // Threshold tick. Tall enough to peek above/below the track
+                // so it reads as a marker, not part of the bar itself.
+                Rectangle()
+                    .fill(Theme.textPrimary)
+                    .frame(width: 2, height: trackHeight + 8)
+                    .offset(x: max(0, tickX - 1), y: -4)
+
+                // Tick caption — small dot label above the tick. Helps
+                // first-time users understand "that bar = your threshold".
+                Text("threshold")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Theme.surface)
+                    )
+                    .offset(x: clampedLabelOffsetX(tickX, viewWidth: w), y: -trackHeight - 4)
+                    .opacity(0.95)
+            }
+            .frame(height: trackHeight)
+        }
+        .frame(height: trackHeight + 14) // room for the floating label above
+    }
+
+    /// Keep the "threshold" label inside the meter horizontally — when
+    /// the tick sits near the left/right edge, anchor the label so it
+    /// doesn't clip off the card.
+    private func clampedLabelOffsetX(_ tickX: CGFloat, viewWidth: CGFloat) -> CGFloat {
+        let labelWidth: CGFloat = 60 // visual estimate
+        let preferred = tickX - labelWidth / 2
+        let minX: CGFloat = 0
+        let maxX: CGFloat = max(0, viewWidth - labelWidth)
+        return min(maxX, max(minX, preferred))
+    }
+}
+
 /// Primary app window. Opens when the user clicks the Dock icon or launches
 /// from /Applications. Sidebar has three tabs:
 ///   - General  — day-to-day preferences (language, mode, mic filter, status)
@@ -263,21 +349,42 @@ struct MainDashboardView: View {
 
     @StateObject private var localDetector = LocalModelDetector.shared
     @ObservedObject private var themeManager = ThemeManager.shared
+    /// Owned by the dashboard so the live mic meter inside Settings has
+    /// a stable lifetime across sub-tab switches. Stops automatically on
+    /// dashboard disappear.
+    @StateObject private var microphoneProbe = MicrophoneProbe()
 
     private var isRecording: Bool { recordingState.isRecording }
 
     enum Tab: String, CaseIterable {
         case home       = "Home"
         case scratchpad = "Scratchpad"
+        case insights   = "Insights"
+        case magicWords = "Magic Words"
         case runLog     = "Run Log"
+        case devMode    = "Dev Mode"
         case settings   = "Settings"
 
         var icon: String {
             switch self {
             case .home:       return "house"
             case .scratchpad: return "note.text"
+            case .insights:   return "chart.bar.fill"
+            case .magicWords: return "wand.and.stars"
             case .runLog:     return "clock.arrow.circlepath"
+            case .devMode:    return "hammer"
             case .settings:   return "gearshape"
+            }
+        }
+
+        /// Whether this tab renders in the sidebar nav. Cases that return
+        /// false are still routable via NotificationCenter and still have
+        /// view bodies — they just don't show as sidebar entries until we
+        /// flip this flag back.
+        var isVisibleInSidebar: Bool {
+            switch self {
+            case .magicWords, .devMode: return false
+            case .home, .scratchpad, .insights, .runLog, .settings: return true
             }
         }
     }
@@ -306,6 +413,12 @@ struct MainDashboardView: View {
         let stored = UserDefaults.standard.double(forKey: "noise_gate_threshold")
         return stored == 0 ? 0.015 : stored
     }()
+
+    /// Custom vocabulary the user wants Whisper + the polish LLM to know
+    /// about. Mirrors the same UserDefaults key as `UserVocabulary.rawString`
+    /// so any code path reading the parsed list sees changes immediately
+    /// (the textfield writes on every keystroke via .onChange).
+    @State private var customVocabulary: String = UserDefaults.standard.string(forKey: UserVocabulary.userDefaultsKey) ?? ""
 
     // Settings tab
     @State private var provider: String = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.openai.rawValue
@@ -392,7 +505,15 @@ struct MainDashboardView: View {
                 .padding(.top, 4)
 
                 VStack(spacing: 2) {
-                    ForEach(Tab.allCases, id: \.self) { tab in
+                    // Sidebar shows the user-facing tabs only. `magicWords`
+                    // and `devMode` are intentionally hidden — the routes,
+                    // switch arms, and views are still wired so we can
+                    // re-enable them by removing the filter when we come
+                    // back to that work. Keep the cases in the enum so
+                    // NotificationCenter routing ("VoiceFlow.SelectTab"
+                    // → "magicWords") still works for any pinned shortcuts
+                    // or test harnesses.
+                    ForEach(Tab.allCases.filter { $0.isVisibleInSidebar }, id: \.self) { tab in
                         sidebarButton(tab)
                     }
                 }
@@ -443,7 +564,10 @@ struct MainDashboardView: View {
                 switch selectedTab {
                 case .home:       homeContent
                 case .scratchpad: ScratchpadView(runStore: runStore)
+                case .insights:   InsightsView(runStore: runStore)
+                case .magicWords: MagicWordsSettingsView()
                 case .runLog:     RunLogView(runStore: runStore)
+                case .devMode:    DevModeSettingsView()
                 case .settings:   settingsContent
                 }
             }
@@ -471,7 +595,10 @@ struct MainDashboardView: View {
             switch raw {
             case "home":       selectedTab = .home
             case "scratchpad": selectedTab = .scratchpad
+            case "insights":   selectedTab = .insights
+            case "magicWords": selectedTab = .magicWords
             case "runLog":     selectedTab = .runLog
+            case "devMode":    selectedTab = .devMode
             case "settings":   selectedTab = .settings
             default: break
             }
@@ -1104,18 +1231,28 @@ struct MainDashboardView: View {
                 realtimeStreamingCard
                 polishModelCard
                 outputStyleCard
-                // Mic sensitivity — was previously defined but orphaned
-                // (never composed into the Settings tab). Restored here
-                // because users hitting the silence-gate hard-drop need a
-                // way to recover: bump sensitivity DOWN to catch quieter
-                // speech, or UP if their AC/keyboard is being transcribed.
-                microphoneFilterCard
+                // Mic sensitivity card — uses live MicrophoneProbe + LevelMeterView
+                // so users can SEE their voice peak past the threshold tick before
+                // committing. Supersedes the older orphaned microphoneFilterCard.
+                microphoneSensitivityCard
+
+                // Custom vocabulary — names, brands, jargon. Injected into both
+                // Whisper STT prompt (biases acoustic decoder) AND polish LLM
+                // prompt (safety-net repair) so proper nouns survive the pipeline.
+                vocabularyCard
                 permissionsCard
                 setupCard
                 footerActions
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Stop the probe when the user navigates away from the dashboard.
+        // We do this here (vs. inside the card) so the probe shuts down
+        // even when the user switches tabs without the card going through
+        // its own .onDisappear.
+        .onDisappear {
+            microphoneProbe.stop()
         }
     }
 
@@ -1124,6 +1261,206 @@ struct MainDashboardView: View {
     /// Live status of the three TCC permissions VoiceFlow requires. Inline
     /// "Open Settings" button per row when the permission isn't granted —
     /// faster than navigating System Settings manually.
+    /// Live mic level + threshold slider in one card. The threshold marker
+    /// rides on the same 0...1 normalized scale as the level bar (sqrt+1.6×),
+    /// so the user can VISUALLY confirm "my voice peaks above the tick" —
+    /// far more intuitive than reading 0.015 in isolation and guessing
+    /// whether their room qualifies as quiet.
+    private var microphoneSensitivityCard: some View {
+        cardContainer {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Microphone Sensitivity")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    Button {
+                        if microphoneProbe.isProbing {
+                            microphoneProbe.stop()
+                        } else {
+                            microphoneProbe.start()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: microphoneProbe.isProbing ? "stop.fill" : "mic.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(microphoneProbe.isProbing ? "Stop" : "Test mic")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(microphoneProbe.isProbing ? .white : Theme.textPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(microphoneProbe.isProbing ? Theme.danger : Theme.surfaceElevated)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(
+                                    microphoneProbe.isProbing ? Color.clear : Theme.dividerStrong,
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the mic for ~12s so you can read out loud and see your level")
+                }
+
+                // Live level meter — fills with current RMS amplitude, shows
+                // the threshold tick as a vertical bar overlay. Filled portion
+                // turns success-green when peaking above threshold so the user
+                // gets unambiguous feedback ("yes, my voice would trigger
+                // recording").
+                LevelMeterView(
+                    level: microphoneProbe.currentLevel,
+                    threshold: MicrophoneProbe.normalizedThreshold(noiseGateThreshold),
+                    isActive: microphoneProbe.isProbing
+                )
+
+                // Caption: changes based on probe state to guide the user.
+                Text(microphoneSensitivityCaption)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider().background(Theme.divider).padding(.vertical, 2)
+
+                // Threshold slider. Range mirrors the AudioRecorder runtime
+                // clamp (0.001…0.05) so the UI never exposes values that
+                // would be silently clipped on the next dictation.
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Threshold")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Theme.textPrimary)
+                        Spacer()
+                        Text(String(format: "%.3f", noiseGateThreshold))
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundColor(Theme.textSecondary)
+                    }
+                    Slider(value: $noiseGateThreshold, in: 0.001...0.05, step: 0.001)
+                        .tint(Theme.accent)
+                        .onChange(of: noiseGateThreshold) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "noise_gate_threshold")
+                        }
+                    HStack {
+                        Text("More sensitive")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.textTertiary)
+                        Spacer()
+                        Text("Filters more noise")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Custom vocabulary editor — names, brands, jargon the user dictates
+    /// often. Injected into the Whisper STT prompt (biases the decoder)
+    /// AND the polish LLM prompt (preserves canonical spelling). Same
+    /// pattern as Cursor / Wispr Flow's "Custom Words" feature.
+    ///
+    /// Storage is a single string in UserDefaults, parsed on read by
+    /// `UserVocabulary.terms`. Auto-saves on every keystroke — no save
+    /// button, since the change is cheap and the next dictation should
+    /// reflect what the user just typed.
+    private var vocabularyCard: some View {
+        cardContainer {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Custom Vocabulary")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("Names, brands, and jargon you dictate often. Improves Whisper transcription and polish-step capitalization.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+
+                // Multiline editor — placeholder overlay since SwiftUI's
+                // TextEditor doesn't support a native placeholder until
+                // macOS 14. ZStack-with-Text is the standard workaround.
+                ZStack(alignment: .topLeading) {
+                    if customVocabulary.isEmpty {
+                        Text("e.g. Raunak, VoiceFlow, Shopsense, Fynd, my-side-project")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.textTertiary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $customVocabulary)
+                        .font(.system(size: 13))
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .frame(minHeight: 84)
+                        .onChange(of: customVocabulary) { newValue in
+                            UserDefaults.standard.set(
+                                newValue,
+                                forKey: UserVocabulary.userDefaultsKey
+                            )
+                        }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                        .fill(Theme.surfaceElevated)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                        .strokeBorder(Theme.divider, lineWidth: 1)
+                )
+
+                HStack {
+                    Text("Separate terms with commas or new lines.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                    Spacer()
+                    let count = parsedVocabularyCount
+                    Text(vocabularyCountLabel(count))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(count > 0 ? Theme.textSecondary : Theme.textTertiary)
+                }
+            }
+        }
+    }
+
+    /// Live term count — same parsing rules as `UserVocabulary.terms`
+    /// so the UI can't drift from what the prompt actually receives.
+    private var parsedVocabularyCount: Int {
+        let separators = CharacterSet(charactersIn: ",\n")
+        var seen: Set<String> = []
+        for raw in customVocabulary.components(separatedBy: separators) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            seen.insert(trimmed.lowercased())
+        }
+        return seen.count
+    }
+
+    private func vocabularyCountLabel(_ count: Int) -> String {
+        if count == 0 { return "No terms yet" }
+        if count == 1 { return "1 term" }
+        return "\(count) terms"
+    }
+
+    /// Context-sensitive caption text under the meter.
+    private var microphoneSensitivityCaption: String {
+        if microphoneProbe.isProbing {
+            // While the probe is running, tell the user what success
+            // looks like — their voice should land in the green zone
+            // (above the threshold tick) when speaking normally.
+            let levelPct = Int((microphoneProbe.currentLevel * 100).rounded())
+            return "Speak normally. Live level: \(levelPct)%. Your voice should peak past the tick when you talk; ambient noise should stay below it."
+        }
+        return "Tap Test mic to read aloud and see your live level. Drop the threshold if your voice doesn't trigger; raise it if quiet room noise gets transcribed."
+    }
+
     private var permissionsCard: some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 14) {
