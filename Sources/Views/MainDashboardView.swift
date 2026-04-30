@@ -452,10 +452,18 @@ struct MainDashboardView: View {
         (TranscriptProcessingMode.rewrite.rawValue, "Rewrite")
     ]
 
+    // User-facing labels are deliberately plain ("Original", "English",
+    // "Hinglish") instead of the developer-y enum names. The output style
+    // IS the output contract — we communicate that contract directly:
+    //   Original  — raw transcription, no transformation
+    //   English   — anything spoken gets translated to English
+    //   Hinglish  — bilingual transcript preserved, Devanagari → Latin
+    // The internal raw values stay (.verbatim / .clean / .clean_hinglish)
+    // so existing UserDefaults parse cleanly across the relabel.
     private let outputModes: [(id: String, label: String)] = [
-        (TranscriptOutputStyle.verbatim.rawValue, "Verbatim"),
-        (TranscriptOutputStyle.clean.rawValue, "Clean"),
-        (TranscriptOutputStyle.cleanHinglish.rawValue, "Clean + Hinglish")
+        (TranscriptOutputStyle.verbatim.rawValue,      "Original"),
+        (TranscriptOutputStyle.clean.rawValue,         "English"),
+        (TranscriptOutputStyle.cleanHinglish.rawValue, "Hinglish")
     ]
 
     /// Cloud polish options. Filtered by tier:
@@ -911,6 +919,18 @@ struct MainDashboardView: View {
         }
     }
 
+    /// Whisper's `language` hint for the **Original** style (verbatim).
+    ///
+    /// Why scoped to Original: the polished styles (English / Hinglish) now
+    /// resolve their language hint inside `WhisperService.route(forStyle:)`
+    /// based on the output contract — `.clean` uses auto-detect so it can
+    /// translate from any source, `.cleanHinglish` pins to "hi" so Whisper
+    /// emits Latin Hindi. Letting the user override that in those modes
+    /// would only break the contract.
+    ///
+    /// Original is the one path where the user's explicit choice still
+    /// drives the wire request, because Original deliberately ships raw
+    /// STT output with no LLM rewrite.
     private var languageCard: some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 12) {
@@ -919,6 +939,12 @@ struct MainDashboardView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(Theme.textPrimary)
                     Spacer()
+                    Text("Original mode only")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Theme.divider))
                     if isOnGroqTier {
                         Text("Locked to English")
                             .font(.system(size: 10, weight: .semibold))
@@ -939,12 +965,12 @@ struct MainDashboardView: View {
                 .opacity(isOnGroqTier ? 0.45 : 1.0)
 
                 if isOnGroqTier {
-                    Text("Groq's free tier supports English only. Add your OpenAI API key in Settings → Provider to unlock Hindi, Hinglish, and 100+ other languages.")
+                    Text("Groq's free tier supports English only. Add your OpenAI API key in Settings → Provider to unlock Hindi and 100+ other languages here.")
                         .font(.system(size: 11))
                         .foregroundColor(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("Auto-detect picks the language per recording. Lock to Hindi or English if you're always speaking one. Locking to English will also translate any Hindi you speak into English.")
+                    Text("Whisper's language hint for raw transcription. Auto-detect picks per recording. Lock to Hindi or English if you stay in one — slightly higher accuracy when the decoder doesn't have to guess.")
                         .font(.system(size: 11))
                         .foregroundColor(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -976,15 +1002,18 @@ struct MainDashboardView: View {
         provider == TranscriptionProvider.groq.rawValue && openAIKey.isEmpty
     }
 
-    /// Output styles available given the current tier. Drops `cleanHinglish`
-    /// + `translateEnglish` on the Groq tier — neither works reliably with
-    /// the embedded Groq pipeline. The `outputStyleCard` falls through to
-    /// `clean` automatically when Groq is selected.
+    /// Output styles available given the current tier.
+    ///
+    /// Groq-tier users (free tier, no OpenAI key) only see **Original**.
+    /// **English** and **Hinglish** both require OpenAI's multilingual
+    /// Whisper — Groq's English-only STT can't transcribe Hindi for
+    /// translation OR for bilingual preservation, so showing those
+    /// options would just silently produce broken output. The OpenAI
+    /// upsell card on the dashboard explains how to unlock them.
     private var visibleOutputModes: [(id: String, label: String)] {
         if isOnGroqTier {
             return outputModes.filter {
-                $0.id == TranscriptOutputStyle.verbatim.rawValue ||
-                $0.id == TranscriptOutputStyle.clean.rawValue
+                $0.id == TranscriptOutputStyle.verbatim.rawValue
             }
         }
         return outputModes
@@ -1231,6 +1260,14 @@ struct MainDashboardView: View {
                 realtimeStreamingCard
                 polishModelCard
                 outputStyleCard
+                // Language picker is only meaningful for Original mode —
+                // English / Hinglish resolve their language hint inside
+                // WhisperService.route() based on the output contract.
+                // Conditional render keeps the Settings page tidy when
+                // the picker has nothing to do.
+                if outputMode == TranscriptOutputStyle.verbatim.rawValue {
+                    languageCard
+                }
                 // Mic sensitivity card — uses live MicrophoneProbe + LevelMeterView
                 // so users can SEE their voice peak past the threshold tick before
                 // committing. Supersedes the older orphaned microphoneFilterCard.
@@ -1864,7 +1901,7 @@ struct MainDashboardView: View {
                         .foregroundColor(Theme.textPrimary)
                     Spacer()
                     if isOnGroqTier {
-                        Text("Hinglish requires OpenAI")
+                        Text("English / Hinglish need OpenAI")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(Theme.textTertiary)
                             .padding(.horizontal, 6)
@@ -1872,9 +1909,8 @@ struct MainDashboardView: View {
                             .background(Capsule().fill(Theme.divider))
                     }
                 }
-                // On Groq tier: hide the Hinglish option entirely so user
-                // doesn't pick it expecting it to work. On OpenAI tier:
-                // show the full list.
+                // Groq tier shows only Original. English + Hinglish both
+                // require OpenAI's multilingual STT (Groq is English-only).
                 ThemedPillTabs(
                     options: visibleOutputModes.map { (id: $0.id, label: $0.label) },
                     selection: $outputMode
@@ -1888,27 +1924,39 @@ struct MainDashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        // Reconcile when the user's tier changes. If they fall back to
+        // Groq (e.g. delete their OpenAI key) while .clean / .cleanHinglish
+        // is selected, the picker would otherwise have no matching pill —
+        // which renders as "nothing selected" and is impossible to recover
+        // from without re-clicking. Snap back to Verbatim instead.
+        .onAppear { reconcileOutputModeForTier() }
+        .onChange(of: provider) { _ in reconcileOutputModeForTier() }
+        .onChange(of: openAIKey) { _ in reconcileOutputModeForTier() }
     }
 
-    /// Mode-specific helper text — describes what the currently selected
-    /// output style actually does, factoring in the Language selection
-    /// (English locks output to English regardless of spoken language).
+    /// Force `outputMode` to a value that's available in the current
+    /// tier. No-op when the current selection is already valid.
+    private func reconcileOutputModeForTier() {
+        let availableIds = visibleOutputModes.map { $0.id }
+        guard !availableIds.contains(outputMode) else { return }
+        let fallback = TranscriptOutputStyle.verbatim.rawValue
+        outputMode = fallback
+        UserDefaults.standard.set(fallback, forKey: "output_mode")
+    }
+
+    /// Mode-specific helper text — single source of truth for what each
+    /// output contract delivers. Stored language picker is intentionally
+    /// NOT mentioned here (it only affects Original now).
     private var outputStyleHelperText: String {
-        let isEnglishLocked = (selectedLanguage == "en")
         switch TranscriptOutputStyle(rawValue: outputMode) ?? .cleanHinglish {
         case .verbatim:
-            return "Raw transcript with no cleanup. Preserves exact wording, fillers, and source language. Language lock has no effect in this mode."
+            return "Raw transcript with no cleanup. Preserves exact wording, fillers, and source language. The Language picker controls Whisper's language hint in this mode."
         case .clean:
-            if isEnglishLocked {
-                return "Removes fillers, fixes grammar, and translates any Hindi segments to English. Output is always pure English."
-            }
-            return "Removes fillers and fixes grammar. Keeps the source language unchanged."
+            return "Output is always English. If you speak Hindi (or any other language), it gets translated. If you speak English, it just gets fillers + grammar cleaned."
         case .cleanHinglish:
-            if isEnglishLocked {
-                return "Language is locked to English — output will be translated to pure English. (To keep Hinglish, switch Language to Auto-detect.)"
-            }
-            return "Removes fillers, fixes grammar, and enforces Latin characters for mixed Hindi/English (Devanagari → Latin)."
+            return "Bilingual transcripts preserved as-spoken — English stays English, Hindi gets transliterated to Latin script (\u{201C}mera naam Raunak hai\u{201D}). Nothing translated."
         case .translateEnglish:
+            // Hidden from picker; same contract as .clean. Kept for back-compat.
             return "Translates any spoken language to natural English."
         }
     }
@@ -2443,9 +2491,46 @@ private struct ChipGlass: ViewModifier {
     }
 }
 
+/// Push a custom NSCursor while the view is hovered; pop on exit.
+///
+/// **Why this exists**: SwiftUI's first-party `.cursor()` modifier was
+/// added in macOS 14. Our deployment target is macOS 13, so we can't use
+/// it. This is the same effect via `onHover` + NSCursor stack management.
+///
+/// **Lifecycle correctness**: SwiftUI's `onHover` is reliable on enter
+/// AND on exit, but if the hosting view is destroyed mid-hover (e.g.
+/// chip morphs between recording → processing) the exit may not fire.
+/// We keep the implementation cheap (just push/pop) so a leaked cursor
+/// gets corrected the next time the user moves into another tracking
+/// area — not perfect, but visible only for one frame in practice.
+///
+/// **Use case here**: the FloatingChipWindow has `isMovableByWindowBackground`
+/// enabled — users CAN drag the chip but there's no visual hint. The
+/// open-hand cursor on hover communicates "grabbable" the moment the
+/// user mouses over.
+private struct CursorOnHover: ViewModifier {
+    let cursor: NSCursor
+
+    func body(content: Content) -> some View {
+        content.onHover { hovering in
+            if hovering {
+                cursor.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+    }
+}
+
 extension View {
     fileprivate func chipGlass() -> some View {
         self.modifier(ChipGlass())
+    }
+
+    /// Set `cursor` while the user hovers this view. Restores the previous
+    /// cursor on leave.
+    fileprivate func cursorOnHover(_ cursor: NSCursor) -> some View {
+        self.modifier(CursorOnHover(cursor: cursor))
     }
 }
 
@@ -2460,6 +2545,14 @@ struct FloatingChipView: View {
         HStack {
             Spacer()
             chipShape
+                // Open-hand cursor signals draggability. Applied at the
+                // chipShape boundary (NOT the outer HStack) so the cursor
+                // only changes when the mouse is over the visible chip
+                // pill, not over the invisible window padding around it.
+                // Works for every state — idle, recording, processing,
+                // warnings — since AppKit's `isMovableByWindowBackground`
+                // makes the whole window draggable regardless.
+                .cursorOnHover(.openHand)
                 .animation(.easeInOut(duration: 0.18), value: model.state)
             Spacer()
         }

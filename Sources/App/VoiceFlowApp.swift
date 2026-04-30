@@ -1091,24 +1091,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 let processingModeRaw = UserDefaults.standard.string(forKey: "processing_mode") ?? TranscriptProcessingMode.dictation.rawValue
                 let processingMode = TranscriptProcessingMode(rawValue: processingModeRaw) ?? .dictation
 
-                // Policy: Language acts as output-language lock.
-                //   - Language = "en" + any non-verbatim style → translate to English
-                //   - Verbatim always wins (explicit opt-out of any transformation)
-                //   - Otherwise, respect the user's selected style as-is
-                // This keeps the UI matrix honest (Language = target language,
-                // Style = polish intensity) without a 4th redundant picker.
-                let effectiveStyle: TranscriptOutputStyle = {
-                    if userSelectedStyle == .verbatim { return .verbatim }
-                    if language == "en" { return .translateEnglish }
-                    return userSelectedStyle
-                }()
+                // Policy: style alone drives the output contract.
+                //   - Original (verbatim) — raw STT, respects language picker.
+                //   - English (.clean) — translates anything to English.
+                //   - Hinglish (.cleanHinglish) — preserves bilingual mix.
+                //
+                // Previous version coupled `language == "en"` with style to
+                // trigger translation. That meant the language picker did
+                // double duty (Whisper hint + output-language switch), which
+                // confused users — picking English style wouldn't translate
+                // unless they ALSO set language to English. The style is now
+                // the single source of truth; the language picker only
+                // affects Verbatim.
+                let effectiveStyle: TranscriptOutputStyle = userSelectedStyle
 
-                // STT hint: when forcing English output from Hindi speech, the
-                // transcription model needs to SEE the original Hindi — forcing
-                // language="en" to STT would make Whisper hallucinate English
-                // over Hindi audio. Use "auto" so STT captures source faithfully
-                // and let the polish LLM do the translation.
-                let transcriptionLanguage = (effectiveStyle == .translateEnglish && language == "en") ? "auto" : language
+                // STT language hint. For polished styles, WhisperService.route()
+                // overrides this anyway (auto-detect for .clean, "hi" for
+                // .cleanHinglish). The value here only matters for .verbatim,
+                // where the user's explicit language choice wins.
+                let transcriptionLanguage = language
 
                 // Streaming path: if we started a stream session and it's still
                 // alive, commit and await the final transcript. On any failure
