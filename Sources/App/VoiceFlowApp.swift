@@ -599,14 +599,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             UserDefaults.standard.set(TranscriptionProvider.groq.rawValue, forKey: "transcription_provider")
         }
         if UserDefaults.standard.string(forKey: "output_mode") == nil {
-            // Default to .clean (works on the free Groq tier) rather than
-            // .cleanHinglish (which silently requires an OpenAI key for
-            // Hindi/Marathi transliteration and will throw "API key not
-            // present" on the very first dictation after onboarding).
-            // Hinglish is now an opt-in upsell — users who add an OpenAI
-            // key flip the style themselves via Settings, prompted by the
-            // dashboard's "Unlock Hinglish" CTA.
-            UserDefaults.standard.set(TranscriptOutputStyle.clean.rawValue, forKey: "output_mode")
+            // Default to .verbatim ("Original") for first-run. This is the
+            // ONLY style that works end-to-end on the free Groq tier
+            // (no OpenAI key required). After the v0.4.0 routing change,
+            // BOTH .clean (English = translation) AND .cleanHinglish
+            // require OpenAI's multilingual STT — defaulting to either
+            // would surface "No OpenAI API key configured" on the user's
+            // very first dictation, before they've had any chance to add
+            // a key. That's the cliff we're avoiding.
+            //
+            // English / Hinglish remain opt-in upsells: users who add an
+            // OpenAI key in Settings see those pills appear in the Output
+            // Style picker, and the dashboard's "Unlock English+Hinglish"
+            // CTA points them at the right setting.
+            UserDefaults.standard.set(TranscriptOutputStyle.verbatim.rawValue, forKey: "output_mode")
+        } else {
+            // Migration for users upgrading from v0.3.x → v0.4.0+:
+            // they may have `output_mode = "clean"` persisted (the old
+            // default that worked on Groq pre-v0.4.0). After v0.4.0,
+            // .clean = translation = needs OpenAI. If they don't have an
+            // OpenAI key configured, snap them to verbatim so the next
+            // dictation doesn't fail. Doesn't touch users who DO have a
+            // key — they get the upgraded translation behavior they
+            // implicitly opted into by having a key.
+            let stored = UserDefaults.standard.string(forKey: "output_mode") ?? ""
+            let openAIKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
+            let needsOpenAI = stored == TranscriptOutputStyle.clean.rawValue
+                || stored == TranscriptOutputStyle.cleanHinglish.rawValue
+                || stored == TranscriptOutputStyle.translateEnglish.rawValue
+            if needsOpenAI && openAIKey.isEmpty {
+                print("VoiceFlow: migrating output_mode '\(stored)' → 'verbatim' (no OpenAI key, would fail)")
+                UserDefaults.standard.set(TranscriptOutputStyle.verbatim.rawValue, forKey: "output_mode")
+            }
         }
         if UserDefaults.standard.string(forKey: "processing_mode") == nil {
             UserDefaults.standard.set(TranscriptProcessingMode.dictation.rawValue, forKey: "processing_mode")
@@ -1086,8 +1110,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 session.captureCompleted(audioData: audioData, voicedRange: nil)
 
                 let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
-                let outputModeRaw = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.cleanHinglish.rawValue
-                let userSelectedStyle = TranscriptOutputStyle(rawValue: outputModeRaw) ?? .cleanHinglish
+                // Default to verbatim — the only style that works on
+                // the free Groq tier without an OpenAI key. configureDefaultSettings
+                // also seeds this on first launch, but the fallback here
+                // is the safety belt for any code path that reaches
+                // startRecording before configureDefaultSettings has run
+                // (e.g. an early hotkey press during cold-launch).
+                let outputModeRaw = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.verbatim.rawValue
+                let userSelectedStyle = TranscriptOutputStyle(rawValue: outputModeRaw) ?? .verbatim
                 let processingModeRaw = UserDefaults.standard.string(forKey: "processing_mode") ?? TranscriptProcessingMode.dictation.rawValue
                 let processingMode = TranscriptProcessingMode(rawValue: processingModeRaw) ?? .dictation
 

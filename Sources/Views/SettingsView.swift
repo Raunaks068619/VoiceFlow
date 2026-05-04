@@ -321,7 +321,9 @@ struct SettingsView: View {
         groqApiKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
         provider = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.openai.rawValue
         selectedLanguage = UserDefaults.standard.string(forKey: "language") ?? "hi"
-        outputMode = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.cleanHinglish.rawValue
+        // Default to verbatim — only style that works without an OpenAI
+        // key. Matches the seed in configureDefaultSettings.
+        outputMode = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.verbatim.rawValue
         processingMode = UserDefaults.standard.string(forKey: "processing_mode") ?? TranscriptProcessingMode.dictation.rawValue
         polishBackendId = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey) ?? PolishBackend.defaultId
         let storedThreshold = UserDefaults.standard.double(forKey: "noise_gate_threshold")

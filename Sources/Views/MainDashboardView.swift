@@ -430,7 +430,12 @@ struct MainDashboardView: View {
     @State private var openAIKey: String = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
     @State private var groqKey: String = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
     @State private var polishBackendId: String = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey) ?? PolishBackend.defaultId
-    @State private var outputMode: String = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.cleanHinglish.rawValue
+    // Default to verbatim ("Original"). Matches the seed in
+    // VoiceFlowApp.configureDefaultSettings — this fallback only fires
+    // for the brief window before the seed runs, OR if a user manually
+    // wipes the UserDefault. Either way, verbatim is the safe choice
+    // since it's the only style that doesn't require an OpenAI key.
+    @State private var outputMode: String = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.verbatim.rawValue
     @State private var showKeySaved = false
     /// "Want Hinglish + 100+ languages?" upgrade disclosure on the Groq
     /// tier. Persisted so the open/closed state survives view rebuilds.
