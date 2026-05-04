@@ -72,10 +72,20 @@ sleep 1
 # 2. Remove the app. Try the Homebrew uninstall path first (cleanly removes
 #    the cask record); fall back to direct removal for manual installs.
 bold "==> 2/5  Removing app bundle..."
+# Order matters here: ALWAYS try `brew uninstall --cask` first, even if
+# /Applications/VoiceFlow.app is already gone. Otherwise Homebrew keeps
+# its receipt at /opt/homebrew/Caskroom/voiceflow/, and a subsequent
+# `brew install --cask voiceflow` no-ops with "already installed" while
+# /Applications stays empty — putting the user in a stuck state.
+# `--force` skips the "version not installed" abort when the receipt is
+# already partial; `--zap` would also remove user data, which we handle
+# explicitly in step 3 (don't double-clean to keep the script readable).
 if command -v brew >/dev/null 2>&1; then
-    if brew list --cask voiceflow >/dev/null 2>&1; then
-        brew uninstall --cask voiceflow 2>/dev/null || true
-        green "    ✓ Removed via Homebrew"
+    if brew list --cask voiceflow >/dev/null 2>&1 \
+       || [[ -d "/opt/homebrew/Caskroom/voiceflow" ]] \
+       || [[ -d "/usr/local/Caskroom/voiceflow" ]]; then
+        brew uninstall --cask --force voiceflow 2>/dev/null || true
+        green "    ✓ Removed Homebrew receipt"
     fi
 fi
 if [[ -d "${APP_PATH}" ]]; then
@@ -148,9 +158,13 @@ green "    ✓ UserDefaults flushed"
 echo
 green "✅ VoiceFlow fully removed."
 echo
-yellow "Recommended:"
+yellow "Recommended next steps:"
 echo "  1. Restart your Mac (TCC sometimes holds permission grants in"
 echo "     memory until logout). Skip this if you've never granted"
 echo "     VoiceFlow any permissions before."
 echo "  2. Re-install:"
 echo "       brew install --cask raunaks068619/voiceflow/voiceflow"
+echo
+echo "If brew install reports 'already installed' but /Applications/VoiceFlow.app"
+echo "is missing, run:"
+echo "       brew reinstall --cask voiceflow"
