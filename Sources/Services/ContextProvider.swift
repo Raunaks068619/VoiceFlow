@@ -2,6 +2,15 @@ import Foundation
 import AppKit
 import ApplicationServices
 
+/// A single app on a screenshot override list. `name` is captured at
+/// add-time (from the picked `.app`) purely for display — matching is
+/// always by `bundleID`.
+struct ScreenshotAppRule: Codable, Identifiable, Equatable {
+    let bundleID: String
+    let name: String
+    var id: String { bundleID }
+}
+
 /// Captures "what the user was doing" at hotkey-press time.
 ///
 /// **Capture strategy** (ordered, fail-soft):
@@ -42,6 +51,14 @@ final class ContextProvider {
         /// sends it to the context-summary model. Default ON for this
         /// experimental build so the FreeFlow-style flow is testable.
         static let screenshotContextEnabled = "screenshot_context_enabled"
+        /// User override lists layered on top of the built-in dev-surface
+        /// default. Both stored as JSON `[ScreenshotAppRule]`.
+        ///   - skip:  apps the user forces OFF (never screenshot).
+        ///   - force: apps the user forces ON (screenshot even if the
+        ///            category default would skip them, e.g. re-enabling
+        ///            a specific IDE).
+        static let screenshotSkipApps = "screenshot_skip_apps"
+        static let screenshotForceApps = "screenshot_force_apps"
     }
 
     var isContextCaptureEnabled: Bool {
@@ -62,6 +79,78 @@ final class ContextProvider {
         return UserDefaults.standard.bool(forKey: Keys.screenshotContextEnabled)
     }
 
+    // MARK: - Screenshot exclusion overrides
+
+    /// User-managed override lists. Runtime reads these directly from
+    /// UserDefaults at capture time so Settings edits take effect on the
+    /// next dictation without any restart or notification plumbing.
+    var screenshotSkipApps: [ScreenshotAppRule] { decodeRules(Keys.screenshotSkipApps) }
+    var screenshotForceApps: [ScreenshotAppRule] { decodeRules(Keys.screenshotForceApps) }
+
+    /// Should we take a screenshot for this app? Precedence:
+    /// 1. Force list (user said "always screenshot this") wins outright.
+    /// 2. Skip list (user said "never screenshot this") is next.
+    /// 3. Otherwise fall back to the category default — dev/text surfaces
+    ///    are skipped, everything else is captured.
+    func shouldCaptureScreenshot(bundleID: String?, surface: AppSurface) -> Bool {
+        if let id = bundleID {
+            if screenshotForceApps.contains(where: { $0.bundleID == id }) { return true }
+            if screenshotSkipApps.contains(where: { $0.bundleID == id }) { return false }
+        }
+        return AppSurfaceCatalog.benefitsFromScreenshot(surface)
+    }
+
+    /// Add an app to the "never screenshot" list (and clear any stale
+    /// force-override for the same app). Idempotent on bundle ID.
+    func addSkipApp(_ rule: ScreenshotAppRule) {
+        var force = screenshotForceApps
+        force.removeAll { $0.bundleID == rule.bundleID }
+        setRules(force, key: Keys.screenshotForceApps)
+
+        var skip = screenshotSkipApps
+        guard !skip.contains(where: { $0.bundleID == rule.bundleID }) else { return }
+        skip.append(rule)
+        setRules(skip, key: Keys.screenshotSkipApps)
+    }
+
+    func removeSkipApp(bundleID: String) {
+        var skip = screenshotSkipApps
+        skip.removeAll { $0.bundleID == bundleID }
+        setRules(skip, key: Keys.screenshotSkipApps)
+    }
+
+    /// Add an app to the "always screenshot" list (and clear any stale
+    /// skip-override for the same app). Idempotent on bundle ID.
+    func addForceApp(_ rule: ScreenshotAppRule) {
+        var skip = screenshotSkipApps
+        skip.removeAll { $0.bundleID == rule.bundleID }
+        setRules(skip, key: Keys.screenshotSkipApps)
+
+        var force = screenshotForceApps
+        guard !force.contains(where: { $0.bundleID == rule.bundleID }) else { return }
+        force.append(rule)
+        setRules(force, key: Keys.screenshotForceApps)
+    }
+
+    func removeForceApp(bundleID: String) {
+        var force = screenshotForceApps
+        force.removeAll { $0.bundleID == bundleID }
+        setRules(force, key: Keys.screenshotForceApps)
+    }
+
+    private func decodeRules(_ key: String) -> [ScreenshotAppRule] {
+        guard
+            let data = UserDefaults.standard.data(forKey: key),
+            let rules = try? JSONDecoder().decode([ScreenshotAppRule].self, from: data)
+        else { return [] }
+        return rules
+    }
+
+    private func setRules(_ rules: [ScreenshotAppRule], key: String) {
+        guard let data = try? JSONEncoder().encode(rules) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
     /// Capture the snapshot. SAFE TO CALL on main thread; takes ~1–10ms.
     /// If you suspect it's slowing the hotkey response, profile with
     /// `Instruments → Time Profiler` — but as of writing, the AX query
@@ -76,7 +165,7 @@ final class ContextProvider {
         let appName = frontApp?.localizedName
         let surface = AppSurfaceCatalog.surface(for: bundleID)
         let windowInfo = activeWindowInfo(for: frontApp)
-        let screenshot = captureScreenshot(windowInfo: windowInfo)
+        let screenshot = captureScreenshot(windowInfo: windowInfo, bundleID: bundleID, surface: surface)
 
         // Selection capture — short-circuit when we're foreground (would
         // capture our own UI's selection state, which is meaningless).
@@ -159,9 +248,21 @@ final class ContextProvider {
         return nil
     }
 
-    private func captureScreenshot(windowInfo: ActiveWindowInfo?) -> ContextScreenshot? {
+    private func captureScreenshot(
+        windowInfo: ActiveWindowInfo?,
+        bundleID: String?,
+        surface: AppSurface
+    ) -> ContextScreenshot? {
         guard isScreenshotContextEnabled else {
             return ContextScreenshot(status: .disabled)
+        }
+
+        // App exclusion — dev/text surfaces (and user overrides) skip the
+        // shot entirely. Bail before requesting Screen Recording or doing
+        // any pixel work; downstream sees `.skippedApp` and never calls the
+        // vision model, so no tokens are spent.
+        guard shouldCaptureScreenshot(bundleID: bundleID, surface: surface) else {
+            return ContextScreenshot(status: .skippedApp)
         }
 
         guard CGPreflightScreenCaptureAccess() else {

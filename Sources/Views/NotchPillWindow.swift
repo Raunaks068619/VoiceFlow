@@ -35,9 +35,9 @@ enum NotchPanelMode: String, CaseIterable {
     var panelHeight: CGFloat {
         switch self {
         case .transcriptions: return NotchPillScreenGeometry.expandedPanelHeight
-        case .notes: return 152
-        case .memory: return 126
-        case .stats: return 100
+        case .notes: return 164
+        case .memory: return 138
+        case .stats: return 112
         }
     }
 
@@ -67,6 +67,7 @@ final class NotchPillModel: ObservableObject {
     }
     @Published var audioLevel: Float = 0
     @Published var hasAllPermissions: Bool = true
+    @Published var missingPermissionNames: [String] = []
     @Published var hardwareNotchSize: CGSize = NotchPillScreenGeometry.fallbackNotchSize
     @Published var isExternalDock: Bool = false
     @Published var liveTranscript: String = ""
@@ -86,9 +87,15 @@ enum NotchPillScreenGeometry {
     static let defaultVisibleExpansion: CGFloat = 63
     static let maxSurfaceWidth: CGFloat = 456
     static let openPanelWidthExpansion: CGFloat = 32
-    static let expandedPanelHeight: CGFloat = 164
+    static let expandedPanelHeight: CGFloat = 176
     static let listeningPanelHeight: CGFloat = 62
     static let errorPanelHeight: CGFloat = 136
+    // The permissions notice mirrors the error-card layout but its copy is
+    // shorter (1-line desc + 1-line missing list, vs the errors' 2+2 lines),
+    // so it needs a snugger height. Reusing errorPanelHeight (136) left ~20pt
+    // of dead space below the content, making the card look oversized next to
+    // the real error states. Measured content ≈ 116pt; +6 breathing room.
+    static let permissionsPanelHeight: CGFloat = 122
     static let morphDuration: TimeInterval = 0.50
 
     private static let lanePadding: CGFloat = 10
@@ -149,7 +156,8 @@ enum NotchPillScreenGeometry {
         notchSize: CGSize,
         isExternalDock: Bool,
         liveTranscript: String,
-        panelMode: NotchPanelMode = .transcriptions
+        panelMode: NotchPanelMode = .transcriptions,
+        hasAllPermissions: Bool = true
     ) -> CGSize {
         let rowHeight = rowHeight(state: state, notchSize: notchSize, isExternalDock: isExternalDock)
         let defaultPillWidth = defaultPillWidth(
@@ -166,12 +174,13 @@ enum NotchPillScreenGeometry {
         let pillWidth = pillWidth(
             state: state,
             centerGapWidth: centerGapWidth,
-            defaultPillWidth: defaultPillWidth
+            defaultPillWidth: defaultPillWidth,
+            hasAllPermissions: hasAllPermissions
         )
         let width = min(maxSurfaceWidth, pillWidth + backgroundSideExpansion(state: state, isExternalDock: isExternalDock) * 2)
         let height = rowHeight
             + inlineTranscriptHeight(state: state, liveTranscript: liveTranscript)
-            + expandedPanelHeightValue(for: state, panelMode: panelMode)
+            + expandedPanelHeightValue(for: state, panelMode: panelMode, hasAllPermissions: hasAllPermissions)
 
         return CGSize(width: ceil(width), height: ceil(height))
     }
@@ -240,25 +249,30 @@ enum NotchPillScreenGeometry {
     private static func pillWidth(
         state: NotchPillState,
         centerGapWidth: CGFloat,
-        defaultPillWidth: CGFloat
+        defaultPillWidth: CGFloat,
+        hasAllPermissions: Bool
     ) -> CGFloat {
-        switch state {
-        case .idle, .proximity:
-            return defaultPillWidth
-        default:
-            let leftContentWidth = lanePadding
-                + notchMarkWidth
-                + statusSpacing
-                + measuredStatusTextWidth(statusLabel(for: state))
-                + statusTrailingPadding
-            let laneWidth = max(leftContentWidth, rightContentWidth(for: state)) + stateWidthBreathingRoom
-            let baseWidth = max(defaultPillWidth, ceil(centerGapWidth + laneWidth * 2))
+        if hasAllPermissions {
             switch state {
-            case .panelHover, .panelTranscript, .panelError:
-                return min(maxSurfaceWidth, baseWidth + openPanelWidthExpansion)
+            case .idle, .proximity:
+                return defaultPillWidth
             default:
-                return baseWidth
+                break
             }
+        }
+
+        let leftContentWidth = lanePadding
+            + notchMarkWidth
+            + statusSpacing
+            + measuredStatusTextWidth(statusLabel(for: state, hasAllPermissions: hasAllPermissions))
+            + statusTrailingPadding
+        let laneWidth = max(leftContentWidth, rightContentWidth(for: state)) + stateWidthBreathingRoom
+        let baseWidth = max(defaultPillWidth, ceil(centerGapWidth + laneWidth * 2))
+        switch state {
+        case .panelHover, .panelTranscript, .panelError:
+            return min(maxSurfaceWidth, baseWidth + openPanelWidthExpansion)
+        default:
+            return baseWidth
         }
     }
 
@@ -283,9 +297,10 @@ enum NotchPillScreenGeometry {
 
     private static func expandedPanelHeightValue(
         for state: NotchPillState,
-        panelMode: NotchPanelMode
+        panelMode: NotchPanelMode,
+        hasAllPermissions: Bool
     ) -> CGFloat {
-        if case .panelHover = state { return panelMode.panelHeight }
+        if case .panelHover = state { return hasAllPermissions ? panelMode.panelHeight : permissionsPanelHeight }
         if case .panelTranscript = state { return listeningPanelHeight }
         if case .panelError = state { return errorPanelHeight }
         return 0
@@ -304,7 +319,7 @@ enum NotchPillScreenGeometry {
         }
     }
 
-    private static func statusLabel(for state: NotchPillState) -> String {
+    private static func statusLabel(for state: NotchPillState, hasAllPermissions: Bool) -> String {
         switch state {
         case .listening, .panelTranscript:
             return "Listening"
@@ -319,9 +334,9 @@ enum NotchPillScreenGeometry {
         case .panelError(let title, _, _):
             return compactErrorLabel(for: title)
         case .panelHover:
-            return AppBrand.name
+            return hasAllPermissions ? AppBrand.name : "Permissions required"
         case .idle, .proximity:
-            return "Ready"
+            return hasAllPermissions ? "Ready" : "Permissions required"
         }
     }
 
@@ -379,7 +394,8 @@ final class NotchPillCanvasView: NSView {
             notchSize: model.hardwareNotchSize,
             isExternalDock: model.isExternalDock,
             liveTranscript: model.liveTranscript,
-            panelMode: model.activePanelMode
+            panelMode: model.activePanelMode,
+            hasAllPermissions: model.hasAllPermissions
         )
         return NSRect(
             x: bounds.midX - size.width / 2,
@@ -504,7 +520,11 @@ final class NotchPillWindow: NSPanel {
             self.model.audioLevel = 0
             self.model.liveTranscript = ""
             self.flashTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
-                self?.model.state = .idle
+                guard let self else { return }
+                // Only auto-collapse if we're STILL showing Done. If the user
+                // tapped the pill to open the quick panel, don't yank it shut.
+                guard case .done = self.model.state else { return }
+                self.model.state = .idle
             }
         }
     }
@@ -534,12 +554,19 @@ final class NotchPillWindow: NSPanel {
         }
     }
 
+    func setMissingPermissions(_ names: [String]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.model.missingPermissionNames != names else { return }
+            self.model.missingPermissionNames = names
+        }
+    }
+
     func flashPermissionsWarning(durationSeconds: Double = 5.0) {
         flash(
-            message: "Microphone access denied - check System Settings",
-            title: "Microphone access denied",
-            desc: "\(AppBrand.name) needs microphone access to listen. Grant access in System Settings > Privacy.",
-            tip: "Go to System Settings > Privacy & Security > Microphone and enable \(AppBrand.name).",
+            message: "Permissions required - complete setup",
+            title: "Permissions required",
+            desc: "\(AppBrand.name) needs the required permissions before transcription can run.",
+            tip: "Click Fix Permissions, then grant each required permission in the onboarding flow.",
             durationSeconds: durationSeconds
         )
     }
@@ -846,7 +873,8 @@ final class NotchPillWindow: NSPanel {
             notchSize: model.hardwareNotchSize,
             isExternalDock: model.isExternalDock,
             liveTranscript: model.liveTranscript,
-            panelMode: model.activePanelMode
+            panelMode: model.activePanelMode,
+            hasAllPermissions: model.hasAllPermissions
         )
         let hoverFrame = surfaceFrame(for: size, on: screen)
             .insetBy(dx: -Self.hoverRegionOutset, dy: -Self.hoverRegionOutset)

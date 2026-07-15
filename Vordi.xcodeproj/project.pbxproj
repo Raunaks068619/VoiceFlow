@@ -47,6 +47,14 @@
 		9142A6E3F9A06434581A5451 /* CLIBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = D92735525BB7D75241E8F90A /* CLIBackend.swift */; };
 		918CF1AE234D31C81C252F24 /* AccessibilityGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */; };
 		91D809860763228986368378 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */; };
+		FE0C0117DEAD0001BEEF0001 /* ContinuousDictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0001BEEF0002 /* ContinuousDictationController.swift */; };
+		FE0C0117DEAD0006BEEF0001 /* LiveInjectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0006BEEF0002 /* LiveInjectionController.swift */; };
+		FE0C0117DEAD0008BEEF0001 /* AppleSpeechLivePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0008BEEF0002 /* AppleSpeechLivePreview.swift */; };
+		FE0C0117DEAD0007BEEF0001 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0007BEEF0002 /* DebugLog.swift */; };
+		FE0C0117DEAD0002BEEF0001 /* AnalyticsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0002BEEF0002 /* AnalyticsClient.swift */; };
+		FE0C0117DEAD0003BEEF0001 /* MCPConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0003BEEF0002 /* MCPConnectionManager.swift */; };
+		FE0C0117DEAD0004BEEF0001 /* AgentConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0004BEEF0002 /* AgentConnectView.swift */; };
+		FE0C0117DEAD0005BEEF0001 /* VoiceCommandRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0C0117DEAD0005BEEF0002 /* VoiceCommandRouter.swift */; };
 		9356FF99B44FE97AFE801B9B /* PromptEngineerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9BCFE2523F037C18D76095A /* PromptEngineerProfile.swift */; };
 		97F49CD6574D0894F43506BE /* VoiceNoteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19413ECD16A24328128E2EE5 /* VoiceNoteStore.swift */; };
 		9887FD17360AC5295EC09109 /* vordi_dark.svg in Resources */ = {isa = PBXBuildFile; fileRef = 979135EB0A2D5EAE4B69FC1C /* vordi_dark.svg */; };
@@ -161,6 +169,14 @@
 		FC498E736D1087FB9B14187C /* HotKeyListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyListener.swift; sourceTree = "<group>"; };
 		FCCEE66076410F6A7435EAA5 /* AccessibilityGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityGuideView.swift; sourceTree = "<group>"; };
 		FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0001BEEF0002 /* ContinuousDictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinuousDictationController.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0006BEEF0002 /* LiveInjectionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInjectionController.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0008BEEF0002 /* AppleSpeechLivePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechLivePreview.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0007BEEF0002 /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0002BEEF0002 /* AnalyticsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsClient.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0003BEEF0002 /* MCPConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConnectionManager.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0004BEEF0002 /* AgentConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConnectView.swift; sourceTree = "<group>"; };
+		FE0C0117DEAD0005BEEF0002 /* VoiceCommandRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandRouter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -207,6 +223,13 @@
 			isa = PBXGroup;
 			children = (
 				FDB36DB33925A5B691D8B712 /* AudioRecorder.swift */,
+				FE0C0117DEAD0001BEEF0002 /* ContinuousDictationController.swift */,
+				FE0C0117DEAD0006BEEF0002 /* LiveInjectionController.swift */,
+				FE0C0117DEAD0008BEEF0002 /* AppleSpeechLivePreview.swift */,
+				FE0C0117DEAD0007BEEF0002 /* DebugLog.swift */,
+				FE0C0117DEAD0002BEEF0002 /* AnalyticsClient.swift */,
+				FE0C0117DEAD0003BEEF0002 /* MCPConnectionManager.swift */,
+				FE0C0117DEAD0005BEEF0002 /* VoiceCommandRouter.swift */,
 				6AF3DD5E48ACC7EB31C537B5 /* ContextProvider.swift */,
 				183AF48D9C154456FA98F609 /* GitHubService.swift */,
 				2FAF42FBDE9CC6D4AC122C25 /* HallucinationGuard.swift */,
@@ -253,6 +276,7 @@
 				6032E8FC2EEE446EEB66E231 /* NotesWorkspaceView.swift */,
 				1A6D59BD85E3A2AC8B5852ED /* RunLogView.swift */,
 				D9A3515D754AEB9E26CCA68F /* SettingsView.swift */,
+				FE0C0117DEAD0004BEEF0002 /* AgentConnectView.swift */,
 				339BD57B2C8889B2994B269D /* Components */,
 			);
 			path = Views;
@@ -418,6 +442,14 @@
 				918CF1AE234D31C81C252F24 /* AccessibilityGuideView.swift in Sources */,
 				4B62B8CFF45D663C96E949F1 /* AgenticDeveloperModeProfile.swift in Sources */,
 				91D809860763228986368378 /* AudioRecorder.swift in Sources */,
+				FE0C0117DEAD0001BEEF0001 /* ContinuousDictationController.swift in Sources */,
+				FE0C0117DEAD0006BEEF0001 /* LiveInjectionController.swift in Sources */,
+				FE0C0117DEAD0008BEEF0001 /* AppleSpeechLivePreview.swift in Sources */,
+				FE0C0117DEAD0007BEEF0001 /* DebugLog.swift in Sources */,
+				FE0C0117DEAD0002BEEF0001 /* AnalyticsClient.swift in Sources */,
+				FE0C0117DEAD0003BEEF0001 /* MCPConnectionManager.swift in Sources */,
+				FE0C0117DEAD0004BEEF0001 /* AgentConnectView.swift in Sources */,
+				FE0C0117DEAD0005BEEF0001 /* VoiceCommandRouter.swift in Sources */,
 				9142A6E3F9A06434581A5451 /* CLIBackend.swift in Sources */,
 				B82CD7379C2D6B53472916E9 /* CLIRunner.swift in Sources */,
 				4D03854B3E796D3601EFF341 /* Context.swift in Sources */,

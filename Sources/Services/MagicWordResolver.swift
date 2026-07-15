@@ -82,7 +82,9 @@ struct MagicWordResolver {
                 if normalizedNoSpace == phraseNoSpace {
                     return .exact(entry)
                 }
-                if normalizedNoSpace.hasPrefix(phraseNoSpace) {
+                // Min-length floor mirrors the fuzzy path: phrases <4 chars
+                // ("get", "wip") must not prefix-match unrelated longer words.
+                if phraseNoSpace.count >= 4, normalizedNoSpace.hasPrefix(phraseNoSpace) {
                     // Find the original-space split point so the remainder
                     // is recoverable. Walk the original transcript chars
                     // consuming non-space chars until we've eaten
@@ -105,8 +107,16 @@ struct MagicWordResolver {
             // Take the same number of chars as `phrase` from the front of
             // `normalized` and edit-distance them. Cheap because phrases
             // are short (typically <30 chars).
+            // Require a word boundary right after the fuzzy-matched head:
+            // either the head IS the whole transcript, or the next char is a
+            // space. Without this, a short trigger fuzzy-matches the prefix of
+            // an unrelated longer word ("wipe" in "wiped out") and we slice a
+            // corrupted remainder.
+            let nchars = Array(normalized)
+            let headEndsOnBoundary = nchars.count == phrase.count
+                || (nchars.count > phrase.count && nchars[phrase.count] == " ")
             let head = String(normalized.prefix(phrase.count))
-            if Self.editDistance(head, phrase) <= fuzzDistance {
+            if headEndsOnBoundary, Self.editDistance(head, phrase) <= fuzzDistance {
                 let remainder = normalized.count > phrase.count
                     ? String(normalized.dropFirst(phrase.count + 1))
                     : ""
@@ -139,6 +149,14 @@ struct MagicWordResolver {
             idx = normalized.index(after: idx)
         }
         guard consumed == targetCount else { return nil }
+        // Word-boundary guard: the consumed prefix must end at a real
+        // boundary (a space or end-of-string) in the original transcript.
+        // If the next char is a word char, the phrase matched the START of
+        // a longer word ("get" inside "getting") — reject, don't slice a
+        // corrupted remainder.
+        if idx < normalized.endIndex && normalized[idx] != " " {
+            return nil
+        }
         // Skip a single trailing space — that's the natural break after
         // the trigger. Anything after that is the user's remainder.
         if idx < normalized.endIndex && normalized[idx] == " " {

@@ -146,8 +146,13 @@ final class RunStore: ObservableObject {
                 print("RunStore: saved run \(run.id) (\(run.previewText))")
 
                 // MemoryStore is a derived index. We intentionally do not
-                // update it from the dictation hot path; Memory/Insights Sync
-                // imports new run files on demand so recording stays cheap.
+                // update it inline here; instead we tick the auto-sync counter
+                // so a *batched* background Sync fires every N dictations,
+                // keeping recording cheap while bounding index staleness.
+                // Only successful runs carry a usable transcript to embed.
+                if run.status == .success {
+                    IndexerService.shared.noteSavedRun()
+                }
             } catch {
                 print("RunStore: failed to save run — \(error)")
             }

@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// Settings sub-page for the new context-aware features.
 ///
@@ -37,6 +39,12 @@ struct DevModeSettingsView: View {
     @AppStorage(ContextProvider.Keys.screenshotContextEnabled)
     var screenshotContextEnabled: Bool = true
 
+    // Screenshot exclusion overrides — loaded from ContextProvider, mirrored
+    // in @State so the list re-renders on edit. Runtime reads UserDefaults
+    // directly, so these are just the editing surface.
+    @State private var skipApps: [ScreenshotAppRule] = ContextProvider.shared.screenshotSkipApps
+    @State private var forceApps: [ScreenshotAppRule] = ContextProvider.shared.screenshotForceApps
+
     // Trigger tester
     @State private var triggerInput: String = "vordi create insert mock rows for users table"
     @State private var probeOutput: String = ""
@@ -58,6 +66,7 @@ struct DevModeSettingsView: View {
             }
             routingCard
             contextCard
+            screenshotExclusionsCard
             triggerTesterCard
             probeCard
         }
@@ -161,6 +170,181 @@ struct DevModeSettingsView: View {
             )
         }
         .themedCard()
+    }
+
+    // MARK: - Screenshot exclusions card
+
+    private var screenshotExclusionsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle(
+                "Screenshot Exclusions",
+                subtitle: "Which apps skip the visual-context screenshot"
+            )
+
+            Text("IDEs, terminals, and database tools are skipped automatically — their content is text, so a screenshot just makes the AI OCR it back at extra cost. Everything else (browsers, design tools, docs) is captured. Add your own overrides below.")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            divider
+
+            appListSection(
+                title: "Never screenshot these apps",
+                emptyHint: "e.g. add Claude or ChatGPT if you want to keep them text-only.",
+                apps: skipApps,
+                onAdd: { rule in
+                    ContextProvider.shared.addSkipApp(rule)
+                    reloadExclusionLists()
+                },
+                onRemove: { id in
+                    ContextProvider.shared.removeSkipApp(bundleID: id)
+                    reloadExclusionLists()
+                }
+            )
+
+            divider
+
+            appListSection(
+                title: "Always screenshot these apps",
+                emptyHint: "Overrides the default — e.g. force-capture a specific IDE.",
+                apps: forceApps,
+                onAdd: { rule in
+                    ContextProvider.shared.addForceApp(rule)
+                    reloadExclusionLists()
+                },
+                onRemove: { id in
+                    ContextProvider.shared.removeForceApp(bundleID: id)
+                    reloadExclusionLists()
+                }
+            )
+        }
+        .themedCard()
+        .opacity(screenshotContextEnabled && contextCaptureEnabled ? 1 : 0.5)
+        .disabled(!(screenshotContextEnabled && contextCaptureEnabled))
+    }
+
+    private func appListSection(
+        title: String,
+        emptyHint: String,
+        apps: [ScreenshotAppRule],
+        onAdd: @escaping (ScreenshotAppRule) -> Void,
+        onRemove: @escaping (String) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Spacer()
+                Button {
+                    if let rule = pickApplication() { onAdd(rule) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                        Text("Add app…").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                            .fill(Theme.surfaceElevated)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                            .strokeBorder(Theme.dividerStrong, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .vfClickableCursor()
+            }
+
+            if apps.isEmpty {
+                Text(emptyHint)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(apps) { app in
+                        appRow(app, onRemove: onRemove)
+                    }
+                }
+            }
+        }
+    }
+
+    private func appRow(
+        _ app: ScreenshotAppRule,
+        onRemove: @escaping (String) -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: appPath(for: app.bundleID) ?? ""))
+                .resizable()
+                .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(app.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.textPrimary)
+                Text(app.bundleID)
+                    .font(.system(size: 10).monospaced())
+                    .foregroundColor(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button {
+                onRemove(app.bundleID)
+            } label: {
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .vfClickableCursor()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                .fill(Theme.canvas)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.button, style: .continuous)
+                .strokeBorder(Theme.divider, lineWidth: 1)
+        )
+    }
+
+    private func reloadExclusionLists() {
+        skipApps = ContextProvider.shared.screenshotSkipApps
+        forceApps = ContextProvider.shared.screenshotForceApps
+    }
+
+    private func appPath(for bundleID: String) -> String? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)?.path
+    }
+
+    /// Native app picker — the standard macOS way to add an app to a list.
+    /// Reads the chosen `.app`'s bundle identifier + display name.
+    private func pickApplication() -> ScreenshotAppRule? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "Add"
+        panel.message = "Choose an app to add to the list"
+
+        guard
+            panel.runModal() == .OK,
+            let url = panel.url,
+            let bundle = Bundle(url: url),
+            let id = bundle.bundleIdentifier
+        else { return nil }
+
+        let name = FileManager.default.displayName(atPath: url.path)
+            .replacingOccurrences(of: ".app", with: "")
+        return ScreenshotAppRule(bundleID: id, name: name)
     }
 
     // MARK: - Trigger tester
@@ -357,6 +541,7 @@ struct DevModeSettingsView: View {
             "frontmost_bundle_id : \(snap.frontmostBundleID ?? "(nil)")",
             "frontmost_app_name  : \(snap.frontmostAppName ?? "(nil)")",
             "surface             : \(snap.surface.rawValue)",
+            "screenshot_status   : \(snap.screenshot?.status.rawValue ?? "(nil)")",
             "selection_source    : \(snap.selectionSource.rawValue)",
             "selection_chars     : \(snap.selection.count)",
             "selection           : \(snap.selection.isEmpty ? "(empty)" : String(snap.selection.prefix(200)))",

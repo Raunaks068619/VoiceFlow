@@ -47,34 +47,28 @@ final class RealtimeTranscriptionService: NSObject {
         /// Human label for error messages — provider-agnostic UI without
         /// having to switch on the URL host every time we format an error.
         var providerLabel: String
+        /// Optional decoder-biasing prompt (vocabulary + style hint), mirroring
+        /// the batch path's Whisper `prompt` field. Supported on
+        /// gpt-4o-mini-transcribe. nil → no biasing (previous behavior).
+        var prompt: String?
 
-        static func openAI(apiKey: String, language: String) -> Configuration {
+        static func openAI(apiKey: String, language: String, prompt: String? = nil) -> Configuration {
             Configuration(
                 baseURL: URL(string: "wss://api.openai.com/v1/realtime?intent=transcription")!,
                 apiKey: apiKey,
                 model: "gpt-4o-mini-transcribe",
                 language: language,
-                providerLabel: "OpenAI"
+                providerLabel: "OpenAI",
+                prompt: prompt
             )
         }
 
-        /// Groq exposes the same OpenAI-Realtime protocol on a different
-        /// host. Same WebSocket message shape, same intent=transcription
-        /// query, same input_audio_buffer events. Only difference: the
-        /// host + the underlying transcription model.
-        ///
-        /// Model: whisper-large-v3-turbo. Groq's faster Whisper variant —
-        /// the actual reason FreeFlow on Groq feels snappier than us on
-        /// OpenAI's gpt-4o-mini-transcribe at peak load.
-        static func groq(apiKey: String, language: String) -> Configuration {
-            Configuration(
-                baseURL: URL(string: "wss://api.groq.com/openai/v1/realtime?intent=transcription")!,
-                apiKey: apiKey,
-                model: "whisper-large-v3-turbo",
-                language: language,
-                providerLabel: "Groq"
-            )
-        }
+        // NOTE: There is intentionally no `groq(...)` factory. Groq does NOT
+        // expose a realtime transcription WebSocket — only the REST batch
+        // endpoint (/openai/v1/audio/transcriptions). Groq dictations go
+        // through the batch WhisperService path, which is already sub-second on
+        // whisper-large-v3-turbo. (An earlier version wrongly connected Groq to
+        // a nonexistent wss://api.groq.com/.../realtime endpoint.)
     }
 
     enum State: String {
@@ -131,6 +125,14 @@ final class RealtimeTranscriptionService: NSObject {
     private var finalTranscript: String?
     private var commitContinuation: CheckedContinuation<String, Error>?
 
+    /// Watchdog that guarantees `commitAndAwaitFinal()` can never hang forever.
+    /// If the server stalls after commit (never sends `...completed`, never
+    /// errors, never drops the socket), the continuation would block the
+    /// dictation indefinitely. The watchdog resumes it with `.missingFinal`
+    /// after `commitTimeoutSeconds`, so the caller falls back to the batch WAV.
+    private var commitWatchdog: Task<Void, Never>?
+    private let commitTimeoutSeconds: Double = 10
+
     init(config: Configuration) {
         self.config = config
         super.init()
@@ -186,8 +188,23 @@ final class RealtimeTranscriptionService: NSObject {
         sendJSON(commit, via: task)
         state = .committed
 
+        let timeout = self.commitTimeoutSeconds
         return try await withCheckedThrowingContinuation { cont in
             self.commitContinuation = cont
+            // Arm the timeout. On fire, if the continuation is still pending,
+            // fail it with `.missingFinal` and tear the socket down so a late
+            // server event can't double-resume.
+            self.commitWatchdog?.cancel()
+            self.commitWatchdog = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if Task.isCancelled { return }
+                await MainActor.run { [weak self] in
+                    guard let self, let pending = self.commitContinuation else { return }
+                    self.commitContinuation = nil
+                    pending.resume(throwing: StreamError.missingFinal)
+                    self.close()
+                }
+            }
         }
     }
 
@@ -199,6 +216,8 @@ final class RealtimeTranscriptionService: NSObject {
         task = nil
         session = nil
         // If a commit was pending, fail it now.
+        commitWatchdog?.cancel()
+        commitWatchdog = nil
         if let cont = commitContinuation {
             commitContinuation = nil
             cont.resume(throwing: StreamError.missingFinal)
@@ -211,14 +230,27 @@ final class RealtimeTranscriptionService: NSObject {
     private func sendSessionUpdate() async throws {
         guard let task else { throw StreamError.notConnected }
         // turn_detection: null → we control commit boundaries explicitly.
+        //
+        // Only send `language` when it's a real hint. Passing "" (or "auto")
+        // pins the decoder to an empty language and breaks auto-detect — the
+        // batch path omits the field entirely in that case, so mirror it.
+        var transcription: [String: Any] = ["model": config.model]
+        let lang = config.language.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !lang.isEmpty && lang.lowercased() != "auto" {
+            transcription["language"] = lang
+        }
+        // Decoder biasing: send the same vocabulary + style prompt as the batch
+        // path so streaming transcripts get equal proper-noun / user-vocabulary
+        // accuracy. Without this the default-on streaming path had zero biasing.
+        if let prompt = config.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty {
+            transcription["prompt"] = prompt
+        }
         let session: [String: Any] = [
             "type": "transcription_session.update",
             "session": [
                 "input_audio_format": "pcm16",
-                "input_audio_transcription": [
-                    "model": config.model,
-                    "language": config.language
-                ],
+                "input_audio_transcription": transcription,
                 "turn_detection": NSNull()
             ]
         ]
@@ -292,6 +324,8 @@ final class RealtimeTranscriptionService: NSObject {
             // necessarily the delta accumulation — prefer it.
             let transcript = (json["transcript"] as? String) ?? accumulatedTranscript
             finalTranscript = transcript
+            commitWatchdog?.cancel()
+            commitWatchdog = nil
             if let cont = commitContinuation {
                 commitContinuation = nil
                 cont.resume(returning: transcript)
@@ -323,6 +357,8 @@ final class RealtimeTranscriptionService: NSObject {
         guard state != .failed && state != .done else { return }
         state = .failed
         onError?(error)
+        commitWatchdog?.cancel()
+        commitWatchdog = nil
         if let cont = commitContinuation {
             commitContinuation = nil
             cont.resume(throwing: error)

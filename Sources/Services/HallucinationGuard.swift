@@ -138,6 +138,23 @@ enum HallucinationGuard {
             )
         }
 
+        // gpt-4o transcribe path: confidence is per-token logprobs only, so the
+        // no_speech AND-gate above can NEVER fire (no_speech_prob is nil). Apply
+        // a conservative standalone logprob floor instead. Keyed on
+        // `noSpeechProb == nil` so the whisper / Groq verbose_json path (which
+        // always carries a no_speech_prob) is completely unaffected. The
+        // threshold is deliberately stricter than the whisper avg_logprob
+        // (-1.0) because per-token logprobs sit much closer to 0 for confident
+        // output — this only catches egregiously uncertain transcription.
+        if confidence.noSpeechProb == nil,
+           let lp = confidence.avgLogprob,
+           lp < Thresholds.gpt4oAvgLogprob {
+            return Decision(
+                shouldDrop: true,
+                reason: "gpt-4o avg per-token logprob=\(String(format: "%.2f", lp)) < \(Thresholds.gpt4oAvgLogprob) (low confidence)"
+            )
+        }
+
         // Layer 3: structural heuristics. Skip the "unsupported script"
         // sub-check when the polish step will run — for `.cleanHinglish`
         // and `.clean` paths, the LLM can transliterate any script to
@@ -168,6 +185,13 @@ enum HallucinationGuard {
         /// Compression ratio of input → token output. >2.4 means the
         /// model is repeating itself ("the the the the").
         static let compressionRatio: Double = 2.4
+        /// Standalone avg-logprob floor for the gpt-4o transcribe path, whose
+        /// confidence comes from per-token logprobs (not whisper segments) and
+        /// so can't use the no_speech AND-gate. Per-token logprobs sit close to
+        /// 0 for confident output, so this is stricter than `avgLogprob` (-1.0)
+        /// and only fires on egregiously uncertain output. Conservative on
+        /// purpose — TUNE against real gpt-4o run-logs before tightening.
+        static let gpt4oAvgLogprob: Double = -1.6
         /// Minimum alphanumeric character count. Below this we treat
         /// the output as junk regardless of other signals — Whisper
         /// often emits a single OOV token on noise.
@@ -251,17 +275,39 @@ enum HallucinationGuard {
                 return phrase
             }
         }
-        // Special case: phantoms surrounded by whitespace anywhere in the
-        // text. Only check phrases ≥10 chars to avoid false-positive
-        // matches like "out of there" appearing inside legit dictation
-        // (rare but possible). Length gate keeps the false-positive rate low.
-        for phrase in phantomPhrases where phrase.count >= 10 {
+        // Special case: phantoms appearing ANYWHERE in the text (real speech
+        // with a subtitle artifact appended). This pass runs ONLY over
+        // `substringSafePhantoms` — unambiguous training artifacts no one
+        // dictates. We deliberately do NOT substring-match conversational
+        // phantoms like "let's get started" or "all right guys": users say
+        // those mid-sentence, and matching them anywhere was discarding real
+        // transcripts wholesale.
+        for phrase in substringSafePhantoms {
             if lower.contains(" " + phrase) || lower.contains(phrase + " ") {
                 return phrase
             }
         }
         return nil
     }
+
+    /// Subset of `phantomPhrases` safe to match anywhere in the transcript.
+    /// These are YouTube/subtitle credits and known garbled artifacts that
+    /// never occur inside genuine dictation — so an interior match is always
+    /// a hallucination, not a false positive on real speech.
+    private static let substringSafePhantoms: [String] = [
+        "thanks for watching",
+        "thank you for watching",
+        "thanks for watching this video",
+        "please like and subscribe",
+        "don't forget to subscribe",
+        "subtitles by the amara org community",
+        "subtitles by the amara.org community",
+        "subtitle by ai-media",
+        "subtitled by ai-media",
+        "transcript emily beynon",
+        "won't let go of your silverware",
+        "st studio to mention",
+    ]
 
     // MARK: - Layer 3: structural heuristics
 

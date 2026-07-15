@@ -4,6 +4,7 @@ import AVFoundation
 import Carbon
 import ApplicationServices
 import IOKit.hid
+import Combine
 
 @main
 struct VordiApp: App {
@@ -361,7 +362,7 @@ final class PermissionService: ObservableObject {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
     var settingsWindow: NSWindow?
     var onboardingWindow: NSWindow?
     var mainWindow: NSWindow?
@@ -383,6 +384,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var realtimeStreamStart: CFAbsoluteTime = 0
     private var realtimeStreamFailed: Bool = false
     var hotKeyListener: HotKeyListener?
+    /// User-configurable shortcut bindings. Observed below so edits in Settings
+    /// reconfigure the live listener without a restart.
+    let hotkeySettings = HotkeySettingsStore.shared
+    private var hotkeyConfigCancellable: AnyCancellable?
     var permissionService = PermissionService.shared
     let recordingState = RecordingStateStore()
     let runStore = RunStore.shared
@@ -443,12 +448,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private enum HandsFreeState: Equatable { case off, on }
     private var handsFreeState: HandsFreeState = .off
 
+    /// Drives the continuous chunked-dictation loop while hands-free is active:
+    /// each ~2s pause harvests an utterance, which this controller transcribes +
+    /// injects in order. See `ContinuousDictationController`.
+    private let continuousDictation = ContinuousDictationController()
+
+    /// PROTOTYPE (Option B): types realtime partials straight into the focused
+    /// app as you speak, then reconciles to the final polished text. Gated by
+    /// `LiveInjectionController.enabledKey` (default OFF). See the controller.
+    private let liveInjection = LiveInjectionController()
+
+    /// On-device live preview (Apple SFSpeechRecognizer): drives the notch's live
+    /// transcript from a local recognizer so it works on any provider (incl. free
+    /// Groq) and in hands-free — while our API still produces the pasted text.
+    /// Gated by `AppleSpeechLivePreview.enabledKey` (default OFF).
+    private let liveSpeechPreview = AppleSpeechLivePreview()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Regular activation: full app with Dock icon + proper window.
         // Menu bar extra still registered for quick access.
         NSApp.setActivationPolicy(.regular)
         configureDockIcon()
         configureDefaultSettings()
+
+        // Anonymous usage analytics (honors the opt-out internally). app_installed
+        // fires once ever; app_open fires each launch.
+        if !UserDefaults.standard.bool(forKey: "analytics_has_launched_before") {
+            UserDefaults.standard.set(true, forKey: "analytics_has_launched_before")
+            AnalyticsClient.shared.track("app_installed")
+        }
+        AnalyticsClient.shared.track("app_open", params: [
+            "onboarded": UserDefaults.standard.bool(forKey: "has_completed_onboarding")
+        ])
 
         audioRecorder = AudioRecorder()
         whisperService = WhisperService()
@@ -459,6 +490,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // 3s median utterance is a free ~10% latency win.
         whisperService?.prewarmConnections()
         textInjector = TextInjector()
+
+        // Continuous hands-free wiring. The AudioRecorder fires onUtteranceSilence
+        // on a ~2s pause; the controller transcribes + injects each harvested
+        // segment in order via the closures below.
+        audioRecorder?.onUtteranceSilence = { [weak self] in
+            self?.handleUtteranceSilence()
+        }
+        continuousDictation.processSegment = { [weak self] wav, context, alreadyInjected, completion in
+            guard let self else { completion(false); return }
+            self.transcribeAndInjectHandsFreeSegment(
+                audioData: wav,
+                context: context,
+                alreadyInjectedCount: alreadyInjected,
+                completion: completion
+            )
+        }
+        continuousDictation.onExitDrained = { [weak self] in
+            self?.finishHandsFreeSession()
+        }
+
+        // On-device live preview → notch. Apple's recognizer streams partials as
+        // you speak; show them in the notch's live-transcript line. The pasted
+        // text still comes from the API pipeline, unchanged.
+        liveSpeechPreview.onPartial = { [weak self] text in
+            self?.activeFeedbackSurface()?.setLiveTranscript(text)
+        }
+        // Prime Speech Recognition authorization at launch if the feature is on,
+        // so the first dictation already has a live preview (the TCC prompt only
+        // appears once).
+        if UserDefaults.standard.bool(forKey: AppleSpeechLivePreview.enabledKey) {
+            AppleSpeechLivePreview.requestAuthorization { _ in }
+        }
+
         noteStore.observeDictationRuns(from: runStore)
         // Suppression hook: fires after a successful transcript when it
         // can't be injected directly (Vordi foreground, no text input
@@ -493,6 +557,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotKeyListener?.onEscape = { [weak self] in
             self?.handleEscapeKey()
         }
+        // Load the saved bindings and keep the listener in sync with any
+        // future edits from Settings. `.dropFirst()` skips @Published's
+        // replay of the current value (already applied on the line above).
+        applyHotkeyConfig()
+        hotkeyConfigCancellable = hotkeySettings.$config
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyHotkeyConfig() }
 
         // Microphone is essential — request it on launch so Vordi
         // appears in System Settings > Microphone immediately. This is a
@@ -540,10 +612,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // — and would just see a chip that does nothing on Fn-press. This
         // matches Cap's behavior: any time perms are missing, walk the user
         // back through the grant flow.
+        // Resume takes priority over everything else: if the wizard was open
+        // when the app last quit, it was almost certainly a macOS "Quit &
+        // Reopen" triggered by granting Screen Recording / Input Monitoring
+        // (both require a relaunch to take effect). Without this branch, a user
+        // re-running onboarding to add Screen Recording — where
+        // has_completed_onboarding is already true AND the three core perms are
+        // granted — hits neither branch below and lands on the dashboard, with
+        // onboarding silently gone.
         let hasCompleted = UserDefaults.standard.bool(forKey: "has_completed_onboarding")
-        if !hasCompleted {
+        if UserDefaults.standard.bool(forKey: OnboardingCoordinator.inProgressKey) {
+            openOnboardingIfNeeded(force: true, initialStep: resumeOnboardingStep())
+        } else if !hasCompleted {
             openOnboardingIfNeeded()
-        } else if !permissionService.allOnboardingPermissionsGranted {
+        } else if !permissionService.allRequiredGranted {
+            // Re-onboard returning users ONLY when a CORE-required permission
+            // (mic/accessibility/input monitoring) is missing. Screen Recording
+            // is optional (powers screenshot context); gating on it here forced
+            // onboarding on every launch for anyone who never granted it.
             openOnboardingIfNeeded(force: true, initialStep: .permissions)
         }
 
@@ -576,6 +662,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.openMainWindow() }
+        // Run Log "Retry transcript" → re-run the pipeline on the stored audio.
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("Vordi.RetryRun"),
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let runID = note.userInfo?["runID"] as? UUID else { return }
+            self?.handleRetryRun(runID: runID)
+        }
         NotificationCenter.default.addObserver(
             forName: Notification.Name("Vordi.OpenSettings"),
             object: nil,
@@ -704,8 +799,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Re-opens the main dashboard when the user clicks the Dock icon
     /// after having closed the window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // While onboarding is unfinished, a reopen (Dock click, or a relaunch
+        // that routes through here) should surface the wizard — not the
+        // dashboard — so the user is never dropped out of setup mid-flow.
+        if UserDefaults.standard.bool(forKey: OnboardingCoordinator.inProgressKey) {
+            if let onboardingWindow {
+                onboardingWindow.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                openOnboardingIfNeeded(force: true, initialStep: resumeOnboardingStep())
+            }
+            return true
+        }
         if !flag {
             openMainWindow()
+        }
+        return true
+    }
+
+    /// The step to resume onboarding at after a relaunch. Defaults to
+    /// `.permissions` — the only step whose grant buttons trigger a macOS
+    /// "Quit & Reopen" — when no step was persisted.
+    private func resumeOnboardingStep() -> OnboardingStep {
+        let raw = UserDefaults.standard.object(forKey: OnboardingCoordinator.currentStepKey) as? Int
+        return raw.flatMap(OnboardingStep.init(rawValue:)) ?? .permissions
+    }
+
+    /// User dismissed the onboarding window themselves (close button / Cmd-W).
+    /// Clear the resume flags so the wizard doesn't force itself back open on
+    /// the next launch. Not called for programmatic `close()` or app
+    /// termination, so a "Quit & Reopen" relaunch still resumes onboarding.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender == onboardingWindow {
+            OnboardingCoordinator.markDismissed()
         }
         return true
     }
@@ -774,6 +900,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 FeedbackSurfaceStyle.dynamicNotch.rawValue,
                 forKey: FeedbackSurfaceStyle.userDefaultsKey
             )
+        }
+        // Anonymous usage analytics — default ON, opt-out in Settings → Privacy.
+        // Never includes transcript content (see AnalyticsClient).
+        if UserDefaults.standard.object(forKey: AnalyticsClient.analyticsEnabledKey) == nil {
+            UserDefaults.standard.set(true, forKey: AnalyticsClient.analyticsEnabledKey)
         }
     }
 
@@ -891,8 +1022,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// the first read.
     func refreshChipPermissionState() {
         permissionService.refreshStatus()
-        let allGranted = permissionService.allRequiredGranted
-        activeFeedbackSurface()?.setPermissionsAvailable(allGranted)
+        let missingPermissions = missingRequiredPermissionNames
+        activeFeedbackSurface()?.setPermissionsAvailable(missingPermissions.isEmpty)
+        activeFeedbackSurface()?.setMissingPermissions(missingPermissions)
         updatePermissionPollingState()
 
         // Belt-and-suspenders: re-check after 0.6s. TCC sometimes lags
@@ -901,10 +1033,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self = self else { return }
             self.permissionService.refreshStatus()
-            let recheck = self.permissionService.allRequiredGranted
-            self.activeFeedbackSurface()?.setPermissionsAvailable(recheck)
+            let missingPermissions = self.missingRequiredPermissionNames
+            self.activeFeedbackSurface()?.setPermissionsAvailable(missingPermissions.isEmpty)
+            self.activeFeedbackSurface()?.setMissingPermissions(missingPermissions)
             self.updatePermissionPollingState()
         }
+    }
+
+    private var missingRequiredPermissionNames: [String] {
+        var names: [String] = []
+        if !permissionService.microphoneState.isGranted {
+            names.append("Microphone")
+        }
+        if !permissionService.accessibilityState.isGranted {
+            names.append("Accessibility")
+        }
+        if !permissionService.inputMonitoringState.isGranted {
+            names.append("Input Monitoring")
+        }
+        return names
     }
 
     /// Periodic safety-net poll for the chip's permission indicator.
@@ -1082,7 +1229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 },
                 onDone: { [weak self] in
                     let wasFirstRun = !UserDefaults.standard.bool(forKey: "has_completed_onboarding")
-                    UserDefaults.standard.set(true, forKey: "has_completed_onboarding")
+                    OnboardingCoordinator.markFinished()
                     self?.onboardingWindow?.close()
                     self?.onboardingWindow = nil
                     // Feedback surface is now installed from app launch — no longer
@@ -1117,6 +1264,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             onboardingWindow?.contentMaxSize = onboardingSize
             onboardingWindow?.setContentSize(onboardingSize)
             onboardingWindow?.center()
+            // Detect a user-initiated close (X / Cmd-W) so we can clear the
+            // resume flags — see windowShouldClose(_:). Programmatic close()
+            // and app termination do NOT fire that delegate method, so the
+            // resume-after-"Quit & Reopen" flow stays intact.
+            onboardingWindow?.delegate = self
         }
 
         onboardingWindow?.makeKeyAndOrderFront(nil)
@@ -1129,8 +1281,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // a specific "Grant" button in the guided cards (Accessibility,
     // InputMonitoring) or implicitly on first microphone use.
 
+    /// Push the current bindings into the listener.
+    private func applyHotkeyConfig() {
+        let config = hotkeySettings.config
+        hotKeyListener?.configure(
+            pushToTalk: config.pushToTalk,
+            handsFree: config.handsFree,
+            exit: config.exitHandsFree
+        )
+    }
+
     private func startHotKeyListener() {
         guard let hotKeyListener else { return }
+        applyHotkeyConfig()
         hotKeyStartStatus = hotKeyListener.start()
         switch hotKeyStartStatus {
         case .started:
@@ -1178,11 +1341,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         print("Fn+Control pressed → entering hands-free mode")
+        DebugLog.log("handsFreeToggle: ENTER (isRecording=\(isRecording))")
         handsFreeState = .on
         activeFeedbackSurface()?.setHandsFree()
-        guard !isRecording else { return }
+        AnalyticsClient.shared.track("hands_free_used")
+        continuousDictation.start()
+
+        // A push-to-talk capture may already be running: if Fn landed more than
+        // the chord-debounce window before Control, push-to-talk started first
+        // and left `isRecording == true`. The old `guard !isRecording` bailed
+        // here — flipping the UI to hands-free but NEVER starting the continuous
+        // engine, so no utterances were ever harvested. Instead, tear that stray
+        // recording down (discarding its audio) and start fresh in continuous
+        // mode, so entry works regardless of how the chord was pressed.
+        if isRecording {
+            DebugLog.log("handsFreeToggle: aborting in-flight push-to-talk before continuous start")
+            audioRecorder?.abort()
+            isRecording = false
+        }
         isRecording = true
-        startRecording()
+        startRecording(continuousHandsFree: true)
     }
 
     /// Escape — used to exit hands-free mode without requiring a second
@@ -1199,10 +1377,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("\(reason) → exiting hands-free mode")
         handsFreeState = .off
         activeFeedbackSurface()?.setHandsFreeExitedAnimating()
+        // Harvest the final in-flight utterance BEFORE tearing the engine down,
+        // enqueue it, then drain the queue. The surface returns to idle when the
+        // controller reports the queue fully drained (finishHandsFreeSession).
         if isRecording {
+            if let wav = audioRecorder?.harvestSegment() {
+                let context = ContextProvider.shared.snapshot(hotkey: .primary)
+                continuousDictation.enqueue(wav: wav, context: context)
+            }
+            audioRecorder?.stopContinuous()
             isRecording = false
-            stopRecording()
         }
+        // Tear down the on-device live preview and stop feeding it buffers.
+        liveSpeechPreview.stop()
+        audioRecorder?.onLiveSpeechBuffer = nil
+        continuousDictation.beginExit()
     }
 
     private func toggleRecording() {
@@ -1215,7 +1404,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     
-    func startRecording() {
+    func startRecording(continuousHandsFree: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
@@ -1280,11 +1469,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 self.permissionService.requestMicrophoneAccess()
                 return
             case .denied:
-                // User previously denied. Give clear audible feedback and
-                // open the privacy pane so they can fix it. No overlay — a
-                // flashing chip with no dictation is worse than silence.
+                // User previously denied. Give clear audible and visual
+                // feedback, then open the privacy pane so they can fix it.
                 print("Mic permission denied — opening Privacy pane")
                 self.isRecording = false
+                self.activeFeedbackSurface()?.setMissingPermissions(self.missingRequiredPermissionNames)
+                self.activeFeedbackSurface()?.flashPermissionsWarning(durationSeconds: 5.0)
                 NSSound.beep()
                 self.permissionService.openPrivacyPane(.microphone)
                 return
@@ -1305,6 +1495,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                !perms.inputMonitoringState.isGranted {
                 print("Aborting recording: required permissions missing")
                 self.isRecording = false
+                self.activeFeedbackSurface()?.setMissingPermissions(self.missingRequiredPermissionNames)
                 self.activeFeedbackSurface()?.flashPermissionsWarning(durationSeconds: 5.0)
                 return
             }
@@ -1322,14 +1513,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // the transcript still goes to the clipboard and the warning
             // chip flashes with paste instructions.
             self.showRecordingFeedback()
-            // Spin up realtime streaming BEFORE starting the tap so the
-            // PCM16 callback is already set. If the flag is off, skip
-            // entirely — we don't want to pay WebSocket connect cost for
-            // users who haven't opted in.
-            self.setupRealtimeStreamIfEnabled()
-            let didStart = self.audioRecorder?.startRecording() ?? false
+            if continuousHandsFree {
+                // Continuous hands-free transcribes each harvested segment via
+                // the deterministic batch path — a single realtime websocket
+                // can't commit per-utterance, so we don't open one (and clear
+                // any PCM16 hook a prior session left set).
+                self.realtimeStream?.close()
+                self.realtimeStream = nil
+                self.realtimeStreamFailed = false
+                self.audioRecorder?.onPCM16Samples = nil
+            } else {
+                // Spin up realtime streaming BEFORE starting the tap so the
+                // PCM16 callback is already set. If the flag is off, skip
+                // entirely — we don't want to pay WebSocket connect cost for
+                // users who haven't opted in.
+                self.setupRealtimeStreamIfEnabled()
+            }
+            let didStart = self.audioRecorder?.startRecording(continuousHandsFree: continuousHandsFree) ?? false
             if didStart {
                 self.permissionService.markMicrophoneOperational()
+                // On-device live preview: if enabled + authorized for this
+                // language, stream local partials into the notch. Works in both
+                // push-to-talk and hands-free, on any provider — the pasted text
+                // still comes from the API pipeline. Feed tap buffers on main so
+                // the recognizer's task lifetime stays single-threaded.
+                let previewLanguage = UserDefaults.standard.string(forKey: "language") ?? "hi"
+                if UserDefaults.standard.bool(forKey: AppleSpeechLivePreview.enabledKey),
+                   self.liveSpeechPreview.canRun(language: previewLanguage) {
+                    self.liveSpeechPreview.start(language: previewLanguage)
+                    self.audioRecorder?.onLiveSpeechBuffer = { [weak self] buffer in
+                        DispatchQueue.main.async { self?.liveSpeechPreview.append(buffer) }
+                    }
+                } else {
+                    self.audioRecorder?.onLiveSpeechBuffer = nil
+                }
             } else {
                 // Engine failed to start despite granted permission — usually
                 // a device contention issue (another app holding the mic).
@@ -1346,6 +1563,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func stopRecording() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // Tear down the on-device live preview (push-to-talk path) and stop
+            // feeding it buffers before we tear the engine down.
+            self.liveSpeechPreview.stop()
+            self.audioRecorder?.onLiveSpeechBuffer = nil
             // Recording stopped, polish/transcription in flight → processing.
             // The floating chip stays in this state until handleResult
             // completes (success or failure), which calls hideRecordingFeedback
@@ -1495,6 +1716,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                             )
 
                         case .failure(let error):
+                            // PROTOTYPE (Option B): no final text will land, so
+                            // pull any live-typed preview back out of the field.
+                            self.liveInjection.cancel()
                             // Attach context to failed runs too — these are
                             // where debugging value is highest. We need to
                             // know which app they were dictating to when
@@ -1521,6 +1745,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                             let streamLatency = Int((CFAbsoluteTimeGetCurrent() - streamStart) * 1000)
                             stream.close()
                             self.realtimeStream = nil
+                            // Empty streaming result → the stream gave us nothing
+                            // usable. Don't silently drop the dictation: recover
+                            // via the batch path on the WAV we already captured,
+                            // mirroring the catch branch below.
+                            if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                print("Realtime stream returned empty final — falling back to batch")
+                                AnalyticsClient.shared.track("stream_fallback", params: ["cause": "empty"])
+                                self.realtimeStreamFailed = true
+                                self.whisperService?.transcribeAndPolishWithMetadata(
+                                    audioData: audioData,
+                                    language: transcriptionLanguage,
+                                    style: effectiveStyle,
+                                    processingMode: processingMode,
+                                    context: self.pendingContext,
+                                    summarizeContextIfNeeded: false,
+                                    completion: handleResult
+                                )
+                                return
+                            }
                             self.whisperService?.polishOnlyWithMetadata(
                                 rawTranscript: finalText,
                                 providerLabel: "openai/gpt-4o-mini-transcribe/realtime",
@@ -1535,6 +1778,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                             // Streaming failed — drop the socket and recover
                             // via the batch path using the WAV we already have.
                             print("Realtime stream failed, falling back to batch: \(error)")
+                            AnalyticsClient.shared.track("stream_fallback", params: ["cause": "error"])
                             stream.close()
                             self.realtimeStream = nil
                             self.realtimeStreamFailed = true
@@ -1559,6 +1803,92 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         summarizeContextIfNeeded: false,
                         completion: handleResult
                     )
+                }
+            }
+        }
+    }
+
+    // MARK: - Retry a stored run
+
+    /// Re-run transcription + polish on a run's stored audio using the user's
+    /// CURRENT settings, then copy the fresh transcript to the clipboard and
+    /// log a new run. We don't auto-inject: a retry is triggered from the Run
+    /// Log, so there's no valid target field to type into — clipboard + a
+    /// "copied" flash is the predictable behaviour. Wired from the Run Log's
+    /// "Retry transcript" action (previously a dead no-op notification).
+    func handleRetryRun(runID: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let run = self.runStore.loadRun(id: runID),
+                  let audioURL = self.runStore.audioURL(for: run),
+                  let audioData = try? Data(contentsOf: audioURL) else {
+                print("Retry: could not load stored audio for run \(runID)")
+                self.activeFeedbackSurface()?.flashNoAudioWarning(durationSeconds: 3.0)
+                return
+            }
+
+            self.activeFeedbackSurface()?.setProcessing()
+            let session = self.runRecorder.beginRun()
+            session.captureCompleted(audioData: audioData, voicedRange: nil)
+
+            let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
+            let outputModeRaw = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.verbatim.rawValue
+            let style = TranscriptOutputStyle(rawValue: outputModeRaw) ?? .verbatim
+            let processingModeRaw = UserDefaults.standard.string(forKey: "processing_mode") ?? TranscriptProcessingMode.dictation.rawValue
+            let processingMode = TranscriptProcessingMode(rawValue: processingModeRaw) ?? .dictation
+
+            self.whisperService?.transcribeAndPolishWithMetadata(
+                audioData: audioData,
+                language: language,
+                style: style,
+                processingMode: processingMode,
+                context: run.context,
+                summarizeContextIfNeeded: false
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.hideRecordingFeedback()
+                    switch result {
+                    case .success(let metadata):
+                        session.transcriptionCompleted(
+                            provider: metadata.provider,
+                            rawText: metadata.rawText,
+                            latencyMs: metadata.transcriptionLatencyMs
+                        )
+                        if let mode = metadata.postProcessMode {
+                            session.postProcessCompleted(
+                                mode: mode,
+                                style: metadata.postProcessStyle ?? "unknown",
+                                model: metadata.postProcessModel ?? "none",
+                                prompt: metadata.postProcessPrompt ?? "",
+                                finalText: metadata.finalText,
+                                latencyMs: metadata.postProcessLatencyMs,
+                                languageGuardTriggered: metadata.languageGuardTriggered
+                            )
+                        }
+                        if let ctx = metadata.context ?? run.context {
+                            session.attachContext(ctx)
+                        }
+                        session.finish()
+
+                        let finalText = metadata.finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        AnalyticsClient.shared.track("transcript_retried", params: [
+                            "status": finalText.isEmpty ? "noSpeech" : "success"
+                        ])
+                        if finalText.isEmpty {
+                            self.activeFeedbackSurface()?.flashNoOutputWarning(durationSeconds: 4.0)
+                        } else {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(metadata.finalText, forType: .string)
+                            self.activeFeedbackSurface()?.flashTranscriptCopied(durationSeconds: 4.0)
+                        }
+                    case .failure(let error):
+                        // Coarse stage only — never the raw error string (it can
+                        // carry endpoints/keys).
+                        AnalyticsClient.shared.track("dictation_failed", params: ["stage": "retry"])
+                        session.fail(reason: Self.shortErrorDescription(error))
+                        self.activeFeedbackSurface()?.flashNoOutputWarning(durationSeconds: 4.0)
+                    }
                 }
             }
         }
@@ -1637,6 +1967,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
+        // Variable recognition WRAPS standard cleanup. The text was already
+        // polished by the primary pass (fallbackFinalText) — running the
+        // profile would re-invoke its inner StandardCleanupProfile and polish
+        // a SECOND time (2× LLM latency + cost) on every IDE/terminal dictation.
+        // Apply only the deterministic var-naming + filename transforms on the
+        // already-polished text; no LLM round-trip.
+        if decision.profile.kind == .variableRecognition {
+            let (vars, _) = VariableRecognitionProfile.applyVariableTransforms(fallbackFinalText)
+            let (withFiles, _) = VariableRecognitionProfile.applyFilenameTagging(vars, surface: context.surface)
+            session.overrideFinalText(withFiles)
+            self.persistAndInject(
+                text: withFiles,
+                session: session,
+                targetBundleIdentifier: context.frontmostBundleID
+            )
+            return
+        }
+
         // Non-standard profile → run its transform, override final text.
         let input = TransformerInput(
             rawTranscript: trimmedRaw,
@@ -1679,22 +2027,168 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func persistAndInject(
         text: String,
         session: RunSession,
-        targetBundleIdentifier: String? = nil
+        targetBundleIdentifier: String? = nil,
+        handsFreeChunkOrdinal: Int? = nil,
+        injectionResult: ((Bool) -> Void)? = nil
     ) {
         session.finish()
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             print("Empty transcript (likely hallucination-filtered); nothing to inject.")
-            activeFeedbackSurface()?.flashNoOutputWarning(durationSeconds: 4.0)
+            // PROTOTYPE (Option B): the preview we live-typed has no final text
+            // to become — yank it back out so we don't leave a stray fragment.
+            liveInjection.cancel()
+            // In a continuous hands-free session an empty chunk is normal (a
+            // filtered utterance) — don't flash a warning that interrupts the
+            // flow; just report "not injected" so spacing stays correct.
+            if handsFreeChunkOrdinal == nil {
+                activeFeedbackSurface()?.flashNoOutputWarning(durationSeconds: 4.0)
+            }
+            injectionResult?(false)
+            return
+        }
+        if let ordinal = handsFreeChunkOrdinal {
+            // Continuous hands-free chunk: keep the hands-free visual (no
+            // setDone), inject with a leading space after the first injected
+            // chunk, and bypass the trim/dedup of the normal path.
+            self.textInjector?.injectHandsFreeChunk(
+                trimmed,
+                prependSpace: ordinal > 0,
+                targetBundleIdentifier: targetBundleIdentifier
+            )
+            injectionResult?(true)
             return
         }
         self.activeFeedbackSurface()?.setDone()
-        self.textInjector?.injectText(trimmed, targetBundleIdentifier: targetBundleIdentifier)
+        // PROTOTYPE (Option B): if we've been typing partials live into the
+        // field, reconcile that preview to the final polished text instead of
+        // pasting — a paste on top would duplicate it. finalize() returns false
+        // when live-inject wasn't active, so the default paste path is unchanged.
+        if !self.liveInjection.finalize(with: trimmed) {
+            self.textInjector?.injectText(trimmed, targetBundleIdentifier: targetBundleIdentifier)
+        }
+        // Anonymous: word count only, never the transcript text itself.
+        AnalyticsClient.shared.track("dictation_completed", params: [
+            "word_count": trimmed.split(whereSeparator: { $0 == " " || $0 == "\n" }).count
+        ])
+        injectionResult?(true)
     }
 
     private func persistWithoutInjection(session: RunSession) {
         session.finish()
+    }
+
+    // MARK: - Continuous hands-free loop
+
+    /// Fired (on main) by AudioRecorder when it detects a ~2s in-utterance pause.
+    /// Cut the buffered audio into a segment and queue it for transcribe+inject;
+    /// the engine keeps running for the next utterance.
+    private func handleUtteranceSilence() {
+        guard continuousDictation.isListening else { return }
+        guard let wav = audioRecorder?.harvestSegment() else { return }
+        // Snapshot context per segment — the user may have switched apps between
+        // utterances, and each chunk should land where it was spoken.
+        let context = ContextProvider.shared.snapshot(hotkey: .primary)
+        continuousDictation.enqueue(wav: wav, context: context)
+    }
+
+    /// Transcribe one harvested segment via the batch path and inject it as a
+    /// spaced chunk. Reports back whether non-empty text was injected so the
+    /// controller can advance the queue and track chunk spacing. Mirrors the
+    /// success/failure bookkeeping of the main `stopRecording` pipeline minus the
+    /// router (Magic Words / dev-mode profiles don't apply mid-continuous-stream)
+    /// and minus the idle-on-done transition (the hands-free visual must persist).
+    private func transcribeAndInjectHandsFreeSegment(
+        audioData: Data,
+        context: ContextSnapshot,
+        alreadyInjectedCount: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let whisper = self.whisperService else { completion(false); return }
+        let session = self.runRecorder.beginRun()
+        session.captureCompleted(audioData: audioData, voicedRange: nil)
+
+        let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
+        let outputModeRaw = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.verbatim.rawValue
+        let style = TranscriptOutputStyle(rawValue: outputModeRaw) ?? .verbatim
+        let processingModeRaw = UserDefaults.standard.string(forKey: "processing_mode") ?? TranscriptProcessingMode.dictation.rawValue
+        let mode = TranscriptProcessingMode(rawValue: processingModeRaw) ?? .dictation
+
+        whisper.transcribeAndPolishWithMetadata(
+            audioData: audioData,
+            language: language,
+            style: style,
+            processingMode: mode,
+            context: context,
+            summarizeContextIfNeeded: false
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { completion(false); return }
+                switch result {
+                case .success(let metadata):
+                    session.transcriptionCompleted(
+                        provider: metadata.provider,
+                        rawText: metadata.rawText,
+                        latencyMs: metadata.transcriptionLatencyMs
+                    )
+                    if let postMode = metadata.postProcessMode {
+                        session.postProcessCompleted(
+                            mode: postMode,
+                            style: metadata.postProcessStyle ?? "unknown",
+                            model: metadata.postProcessModel ?? "none",
+                            prompt: metadata.postProcessPrompt ?? "",
+                            finalText: metadata.finalText,
+                            latencyMs: metadata.postProcessLatencyMs,
+                            languageGuardTriggered: metadata.languageGuardTriggered
+                        )
+                    }
+                    session.attachContext(context)
+
+                    // Hands-free voice command: if the utterance is addressed to
+                    // Verba ("Verba, open Claude"), carry out the action instead of
+                    // typing the words. The wake phrase is what separates a command
+                    // from ordinary dictation. We check the raw transcript (closest
+                    // to what was spoken) and fall back to the polished text.
+                    let commandSource = metadata.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? metadata.finalText
+                        : metadata.rawText
+                    switch VoiceCommandRouter.interpret(commandSource) {
+                    case .executed(let confirmation):
+                        session.finish()  // persist the run; we handled it, nothing to inject
+                        print("🎙️ Voice command: \(confirmation)")
+                        completion(false) // no text injected → keeps chunk spacing correct
+                        return
+                    case .failed(let reason):
+                        session.finish()
+                        print("🎙️ Voice command not run: \(reason)")
+                        completion(false)
+                        return
+                    case .notACommand:
+                        break  // fall through to normal dictation
+                    }
+
+                    self.persistAndInject(
+                        text: metadata.finalText,
+                        session: session,
+                        targetBundleIdentifier: context.frontmostBundleID,
+                        handsFreeChunkOrdinal: alreadyInjectedCount,
+                        injectionResult: completion
+                    )
+                case .failure(let error):
+                    session.attachContext(context)
+                    print("Hands-free segment transcription error: \(error)")
+                    session.fail(reason: Self.shortErrorDescription(error))
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    /// Called once the queue has fully drained after the user exited hands-free.
+    /// Return the recording surface to idle.
+    private func finishHandsFreeSession() {
+        hideRecordingFeedback()
     }
 
     // MARK: - Realtime streaming wiring
@@ -1726,35 +2220,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        // Both OpenAI and Groq expose the OpenAI-Realtime WebSocket
-        // protocol — same message shape, same intent=transcription, same
-        // input_audio_buffer events. Different host + different model.
-        // FreeFlow's "fast on a Groq key" experience comes from this exact
-        // path running against whisper-large-v3-turbo on Groq's stack.
-        let provider = TranscriptionProvider.current
+        // Realtime streaming is OPENAI-ONLY. Groq does NOT expose a realtime
+        // transcription WebSocket — there is no wss://api.groq.com/.../realtime
+        // endpoint, only the REST batch endpoint. The earlier code (and its
+        // comments) wrongly claimed Groq spoke the same Realtime protocol, so
+        // every Groq recording opened a dead socket and ran a useless PCM pump
+        // before falling back to batch. Groq batch (whisper-large-v3-turbo) is
+        // already sub-second, so for Groq we skip streaming and let the fast
+        // batch path run.
+        guard TranscriptionProvider.current == .openai else { return }
+        let apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
+        guard !apiKey.isEmpty else { return }
+
         let language = UserDefaults.standard.string(forKey: "language") ?? "hi"
         let normalizedLanguage = language == "auto" ? "" : language
 
-        let config: RealtimeTranscriptionService.Configuration
-        switch provider {
-        case .openai:
-            let apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
-            guard !apiKey.isEmpty else { return }
-            config = .openAI(apiKey: apiKey, language: normalizedLanguage)
-        case .groq:
-            // User-provided key wins; falls back to embedded beta key
-            // so the free-tier path "just works" out of the box.
-            let userKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
-            let apiKey = userKey.isEmpty ? EmbeddedKeys.groq : userKey
-            guard !apiKey.isEmpty else { return }
-            config = .groq(apiKey: apiKey, language: normalizedLanguage)
-        }
+        // Bias the streaming decoder with the SAME vocabulary + style prompt the
+        // batch path uses, so streaming (the default-on path) no longer produces
+        // lower-quality proper nouns than batch. `prompt` is supported on
+        // gpt-4o-mini-transcribe (the OpenAI realtime model).
+        let config: RealtimeTranscriptionService.Configuration = .openAI(
+            apiKey: apiKey,
+            language: normalizedLanguage,
+            prompt: WhisperService.sttPromptForRealtime
+        )
         let stream = RealtimeTranscriptionService(config: config)
         realtimeStream = stream
         realtimeStreamStart = CFAbsoluteTimeGetCurrent()
+
+        // PROTOTYPE (Option B): if live-inject is on, start a live session so
+        // partials type straight into the focused app (finalize/cancel happen on
+        // the stop path). Default OFF — see LiveInjectionController.
+        let liveInjectActive = liveInjection.isEnabled
+        if liveInjectActive { liveInjection.begin() }
+
         stream.onPartial = { [weak self] text in
             DispatchQueue.main.async {
                 self?.activeFeedbackSurface()?.setLiveTranscript(text)
+                if liveInjectActive { self?.liveInjection.update(to: text) }
             }
         }
 

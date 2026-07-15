@@ -74,6 +74,26 @@ class TextInjector {
         }
     }
 
+    /// Inject one chunk of a continuous hands-free session. Differs from
+    /// `injectText` in two deliberate ways:
+    ///   1. Preserves a caller-requested leading space. Each spoken utterance is
+    ///      pasted separately, so without a separator "hello" + "world" would
+    ///      land as "helloworld". The normal trim path would strip a prepended
+    ///      space, so we re-add it AFTER trimming, right before the paste.
+    ///   2. Skips the 1.0s duplicate-suppression window. Saying the same short
+    ///      word twice in a row ("yes" / "yes") is legitimate dictation; the
+    ///      dedup guard exists for accidental double-fires of a single
+    ///      utterance, which can't happen on the per-segment hands-free path.
+    func injectHandsFreeChunk(_ text: String, prependSpace: Bool, targetBundleIdentifier: String? = nil) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let core = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !core.isEmpty else { return }
+            let payload = prependSpace ? " " + core : core
+            self.injectNormalizedText(payload, targetBundleIdentifier: targetBundleIdentifier)
+        }
+    }
+
     private func injectNormalizedText(_ normalized: String, targetBundleIdentifier: String?) {
         reactivateTargetIfVordiOwnsFocus(targetBundleIdentifier) { [weak self] in
             guard let self else { return }
@@ -213,13 +233,17 @@ class TextInjector {
     /// actively in a textbox. That breaks trust — the app is lying about
     /// what it can see.
     ///
-    /// New approach: *denylist*. Only suppress when the role is something
-    /// pasting clearly can't help with (button clicks, static labels, images,
-    /// menus). For everything else — including AX-permission failures — we
-    /// optimistically try the paste. If the keystroke lands nowhere, the
-    /// user notices and Cmd+V's manually. That's a strictly better failure
-    /// mode than a wrongful "you don't have a textbox focused" lecture when
-    /// they obviously do.
+    /// New approach: *denylist + editability probe*. Suppress when the role
+    /// is something pasting clearly can't help with (button clicks, static
+    /// labels, images, menus). AX-permission failures still fall through to
+    /// an optimistic paste — if AX is broken, the keystroke is the user's
+    /// best shot. For an off-list role we probe the element for text-editing
+    /// signals (see `focusedElementLooksEditable`): real inputs that merely
+    /// report a generic role (Electron, SwiftUI wrappers) keep the silent
+    /// paste, while a genuinely dead region falls back to the clipboard +
+    /// "copied to clipboard" chip so the transcript is never lost. That's a
+    /// strictly better failure mode than either a wrongful "you don't have a
+    /// textbox focused" lecture or silently dropping the dictation.
     ///
     /// Roles confirmed-bad-paste-target — keep this list short. Adding a
     /// role here means we WILL show the warning, so be sure it never hosts
@@ -297,11 +321,56 @@ class TextInjector {
             return .confirmedEditableText
         }
 
-        // Anything else — AXWebArea, AXScrollArea, AXGroup, AXOutline,
-        // AXUnknown, custom Electron roles, you name it — gets the paste
-        // attempt outside Vordi. We'd rather try and fail silently than
-        // refuse to try at all.
-        return .optimistic
+        // Unknown role — AXWebArea, AXScrollArea, AXGroup, AXOutline,
+        // AXUnknown, custom Electron roles. This bucket holds BOTH real
+        // text inputs (Electron/SwiftUI wrappers that report a generic
+        // role while the cursor blinks in them) AND genuinely dead regions
+        // (a page body, an empty area, a static container). They're
+        // indistinguishable by role alone, so probe for text-editing
+        // signals to tell them apart:
+        //   - editable  → keep the silent optimistic paste (Electron path).
+        //   - dead      → route to the clipboard fallback so the user gets
+        //                 the transcript + a "copied to clipboard" chip
+        //                 instead of losing the dictation on the floor.
+        if Self.focusedElementLooksEditable(axElement) {
+            return .optimistic
+        }
+        print("Focused role \(roleString) exposes no text-editing signals — treating as non-text")
+        return .confirmedNonText
+    }
+
+    /// Probe whether an element with an off-list AX role nonetheless
+    /// behaves like a text input. Returns true on ANY text-editing signal:
+    ///   - a settable AXValue (you can write into it), or
+    ///   - text-engine metadata (selection range, insertion caret,
+    ///     character count, selected text).
+    ///
+    /// Electron (VS Code/Cursor/Claude) and AX-quirky SwiftUI wrappers
+    /// expose at least one of these even under a generic role, so they stay
+    /// on the silent-paste path. A genuinely non-editable region exposes
+    /// none, so it falls through to the clipboard fallback.
+    private static func focusedElementLooksEditable(_ element: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+           settable.boolValue {
+            return true
+        }
+
+        let textEngineSignals = [
+            kAXSelectedTextRangeAttribute,
+            kAXInsertionPointLineNumberAttribute,
+            kAXNumberOfCharactersAttribute,
+            kAXSelectedTextAttribute
+        ]
+        for attribute in textEngineSignals {
+            var value: AnyObject?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+               value != nil {
+                return true
+            }
+        }
+
+        return false
     }
 
     /// True when Vordi is the frontmost application. We compare by bundle

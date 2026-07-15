@@ -81,6 +81,10 @@ final class VoiceNoteStore: ObservableObject {
         dictationCaptureOwners.remove(owner)
     }
 
+    func isCapturingDictation(owner: String) -> Bool {
+        dictationCaptureOwners.contains(owner)
+    }
+
     func startDraft() {
         activeNoteID = nil
         draftTitle = ""

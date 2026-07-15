@@ -78,6 +78,42 @@ final class IndexerService: ObservableObject {
         _ = runID
     }
 
+    // MARK: - Batched auto-sync
+
+    /// After this many new dictations accumulate, kick a background Sync so
+    /// Memory (embeddings + entities + FTS) never drifts far behind. Batching
+    /// amortizes the one-time model load and avoids the per-transcription
+    /// indexing that used to hang recording.
+    private static let autoSyncThreshold = 20
+
+    /// New successful dictations saved since the last auto-sync fired.
+    private var newRunsSinceAutoSync = 0
+
+    /// Call once a dictation run is durably saved (off the hot path — this is
+    /// invoked from `RunStore.save`, not the transcription pipeline). Counts
+    /// toward the threshold and, when reached, launches a low-priority
+    /// background Sync. Never blocks the caller.
+    nonisolated func noteSavedRun() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.newRunsSinceAutoSync += 1
+            guard self.newRunsSinceAutoSync >= Self.autoSyncThreshold else { return }
+            self.newRunsSinceAutoSync = 0
+            self.triggerAutoSync()
+        }
+    }
+
+    /// Fire a Sync in the background at low priority. Skips if a sync is
+    /// already running (its backfill sweeps *all* unindexed runs, so nothing
+    /// is lost — the tail is picked up on the next threshold). Runs off the
+    /// main actor so it yields to any live dictation.
+    private func triggerAutoSync() {
+        guard !isWorking else { return }
+        Task(priority: .background) { [weak self] in
+            await self?.syncNow()
+        }
+    }
+
     /// User-triggered Sync. Updates the SQLite corpus from run files, then
     /// computes missing embeddings and entity links. This can be expensive,
     /// so callers should only invoke it from explicit UI.

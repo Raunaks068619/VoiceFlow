@@ -55,6 +55,7 @@ protocol FeedbackSurface: AnyObject {
     func flashNoAudioWarning(durationSeconds: Double)
     func flashNoOutputWarning(durationSeconds: Double)
     func setPermissionsAvailable(_ available: Bool)
+    func setMissingPermissions(_ names: [String])
     func updateAudioLevel(_ level: Float)
     func setLiveTranscript(_ text: String)
 }
@@ -248,6 +249,8 @@ final class FloatingChipWindow: NSPanel, FeedbackSurface {
             self.model.hasAllPermissions = available
         }
     }
+
+    func setMissingPermissions(_ names: [String]) {}
 
     func updateAudioLevel(_ level: Float) {
         let normalized = min(max(level, 0), 1)

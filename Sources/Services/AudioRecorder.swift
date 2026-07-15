@@ -32,6 +32,12 @@ class AudioRecorder: NSObject {
     private var pcm16Converter: AVAudioConverter?
     private var pcm16OutputFormat: AVAudioFormat?
 
+    /// Fires the raw captured buffer (input format) for every tap callback, so an
+    /// on-device speech recognizer can drive a live preview. Additive and
+    /// best-effort — nil when the on-device preview is off. Fires on the tap
+    /// thread; the owner is responsible for hopping to wherever it consumes it.
+    var onLiveSpeechBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     // MARK: - Live amplitude (UI meter)
     //
     // Fires the latest normalized RMS (0...1) for every input buffer, so the
@@ -82,6 +88,30 @@ class AudioRecorder: NSObject {
     /// content lasted at least ~128ms. Both conditions must hold.
     private let minimumVoicedBuffers: Int = 6
 
+    // MARK: - Continuous hands-free (pause-triggered segment harvest)
+    //
+    // When `continuousHandsFree` is true the tap additionally watches for a
+    // ~2s in-utterance pause and fires `onUtteranceSilence` ONCE per utterance.
+    // The owner then calls `harvestSegment()` to cut the buffered audio for that
+    // utterance while the engine keeps running for the next one. None of this
+    // touches the normal hold-to-dictate path (flag defaults to false).
+    var onUtteranceSilence: (() -> Void)?
+    private var continuousHandsFree = false
+    /// In-utterance pause that triggers a harvest, in seconds.
+    private let handsFreeSilenceThreshold: TimeInterval = 2.0
+    /// `handsFreeSilenceThreshold` expressed in tap buffers. Recomputed from the
+    /// live input sample rate on each start (mic rates vary), so the wall-clock
+    /// pause is correct regardless of device.
+    private var silenceBufferTarget = 94
+    private var consecutiveSilentBuffers = 0
+    /// Latch so one long pause fires `onUtteranceSilence` exactly once. Reset
+    /// when voiced audio resumes (next utterance) or on harvest.
+    private var silenceFiredForCurrentUtterance = false
+    /// Guards `rawAudioBuffer` + voiced markers. The tap (render thread) is now
+    /// a second writer alongside `harvestSegment()` (main thread); without a
+    /// lock the cut would race the append. Cheap: ~tens of ns at ~46Hz.
+    private let bufferLock = NSLock()
+
     override init() {
         super.init()
         setupAudioEngine()
@@ -92,7 +122,7 @@ class AudioRecorder: NSObject {
         inputNode = audioEngine?.inputNode
     }
 
-    func startRecording() -> Bool {
+    func startRecording(continuousHandsFree: Bool = false) -> Bool {
         guard let audioEngine = audioEngine, !isRecording else { return false }
 
         rawAudioBuffer.removeAll()
@@ -105,7 +135,16 @@ class AudioRecorder: NSObject {
         pcm16Converter = nil
         pcm16OutputFormat = nil
 
+        // Continuous hands-free silence detection state.
+        self.continuousHandsFree = continuousHandsFree
+        consecutiveSilentBuffers = 0
+        silenceFiredForCurrentUtterance = false
+
         let format = inputNode?.outputFormat(forBus: 0)
+        // Derive the pause threshold in buffers from the live sample rate
+        // (1024 frames per tap buffer). At 48kHz this is ~94 buffers ≈ 2s.
+        let sampleRate = format?.sampleRate ?? 48000
+        silenceBufferTarget = max(1, Int(handsFreeSilenceThreshold * sampleRate / 1024.0))
 
         // Remove any leftover tap from a previous failed start before installing a new one.
         inputNode?.removeTap(onBus: 0)
@@ -129,14 +168,40 @@ class AudioRecorder: NSObject {
         inputNode?.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
             guard let copiedBuffer = self.copyBuffer(buffer) else { return }
+            let rms = self.calculateRMS(buffer: copiedBuffer)
+
+            // Mutate shared buffer/voiced state under the lock so a concurrent
+            // harvestSegment() (main thread) can't race the append.
+            var fireSilence = false
+            self.bufferLock.lock()
             let index = self.rawAudioBuffer.count
             self.rawAudioBuffer.append(copiedBuffer)
-            let rms = self.calculateRMS(buffer: copiedBuffer)
-            if rms >= self.noiseGateThreshold {
+            let voiced = rms >= self.noiseGateThreshold
+            if voiced {
                 if self.firstVoicedIndex == nil { self.firstVoicedIndex = index }
                 self.lastVoicedIndex = index
                 self.voicedBufferCount += 1
             }
+            // Continuous hands-free: detect a ~2s in-utterance pause and arm a
+            // one-shot harvest. Only counts silence AFTER voiced onset, so it
+            // never fires on the initial "entered the mode but said nothing"
+            // silence; the latch makes it fire once per utterance.
+            if self.continuousHandsFree {
+                if voiced {
+                    self.consecutiveSilentBuffers = 0
+                    self.silenceFiredForCurrentUtterance = false
+                } else if self.firstVoicedIndex != nil {
+                    self.consecutiveSilentBuffers += 1
+                    if self.consecutiveSilentBuffers >= self.silenceBufferTarget
+                        && self.voicedBufferCount >= self.minimumVoicedBuffers
+                        && !self.silenceFiredForCurrentUtterance {
+                        self.silenceFiredForCurrentUtterance = true
+                        fireSilence = true
+                    }
+                }
+            }
+            self.bufferLock.unlock()
+
             // Push live amplitude to any UI meter subscriber. Normalize and
             // mild non-linear curve so quiet speech still moves the bars
             // (raw RMS for normal speech sits around 0.02–0.10, which would
@@ -154,16 +219,23 @@ class AudioRecorder: NSObject {
                     self.onPCM16Samples?(pcm16)
                 }
             }
+            // Additive: feed the on-device live-preview recognizer the raw buffer.
+            self.onLiveSpeechBuffer?(copiedBuffer)
+            if fireSilence {
+                DispatchQueue.main.async { [weak self] in self?.onUtteranceSilence?() }
+            }
         }
 
         do {
             try audioEngine.start()
             isRecording = true
             print("Recording started")
+            DebugLog.log("AudioRecorder: engine STARTED continuous=\(continuousHandsFree) silenceTarget=\(silenceBufferTarget) noiseGate=\(noiseGateThreshold) sr=\(sampleRate)")
             return true
         } catch {
             inputNode?.removeTap(onBus: 0)
             print("Failed to start audio engine: \(error)")
+            DebugLog.log("AudioRecorder: engine START FAILED continuous=\(continuousHandsFree) error=\(error)")
             return false
         }
     }
@@ -185,50 +257,112 @@ class AudioRecorder: NSObject {
             self.inputNode?.removeTap(onBus: 0)
             self.audioEngine?.stop()
             self.isRecording = false
+            self.continuousHandsFree = false
 
-            let selectedBuffers: [AVAudioPCMBuffer]
-            // TWO conditions must both hold to proceed to STT:
-            //   1. At least one buffer crossed the RMS noise gate
-            //      (firstVoicedIndex / lastVoicedIndex set)
-            //   2. At least `minimumVoicedBuffers` total voiced
-            //      buffers were captured (≈128ms of voiced audio)
-            //
-            // The combination kills three failure modes:
-            //   • User holds Fn but doesn't speak → no voiced buffers
-            //   • User taps mic accidentally → 1-2 voiced buffers
-            //     (transient), below threshold
-            //   • Single fan burst, knuckle bump → same
-            //
-            // Real dictations — even single-word "yes"/"no" — comfortably
-            // cross 6 voiced buffers. We've never seen a legit dictation
-            // come in under 100ms of voiced content.
-            if let first = self.firstVoicedIndex, let last = self.lastVoicedIndex,
-               self.voicedBufferCount >= self.minimumVoicedBuffers {
-                // Trim leading/trailing silence with padding on both sides.
-                // Interior silence is preserved — a 3s mid-sentence pause stays
-                // a 3s pause so Whisper's segmenter has a chance.
-                let start = max(0, first - self.leadingPaddingBufferCount)
-                let end = min(self.rawAudioBuffer.count - 1, last + self.trailingPaddingBufferCount)
-                selectedBuffers = Array(self.rawAudioBuffer[start...end])
-                print("Recording stopped (voiced range \(first)...\(last), \(self.voicedBufferCount) voiced of \(self.rawAudioBuffer.count) total, trimmed to \(start)...\(end), grace=\(self.stopGraceMilliseconds)ms)")
-            } else {
-                // Hard gate failure. Either no voiced audio at all, or
-                // not enough voiced audio to be a real word. Sending
-                // this to Whisper would just produce a phantom phrase
-                // ("Thanks for watching!", "Plain text only.", etc.).
-                // Drop silently — caller treats nil as a no-op.
-                let voicedCount = self.voicedBufferCount
-                let totalCount = self.rawAudioBuffer.count
-                print("Recording stopped (insufficient voiced audio: \(voicedCount) voiced buffers of \(totalCount), need ≥\(self.minimumVoicedBuffers) — dropping, no STT call)")
-                completion(nil)
-                return
-            }
+            // Snapshot under the lock (a final in-flight tap callback may still
+            // be landing), then trim + encode off-lock.
+            self.bufferLock.lock()
+            let buffers = self.rawAudioBuffer
+            let first = self.firstVoicedIndex
+            let last = self.lastVoicedIndex
+            let voiced = self.voicedBufferCount
+            self.bufferLock.unlock()
 
-            let audioData = self.convertBuffersToWAV(from: selectedBuffers)
+            let audioData = self.encodeVoicedSegment(
+                buffers: buffers, firstVoiced: first, lastVoiced: last, voicedCount: voiced
+            )
             completion(audioData)
         }
     }
-    
+
+    /// Trim leading/trailing silence (with padding) from a captured buffer run
+    /// and WAV-encode it, enforcing the `minimumVoicedBuffers` gate. Returns nil
+    /// when the run lacks enough voiced content. Pure over its arguments — no
+    /// engine/tap access — so both `stopRecording` and `harvestSegment` share it.
+    ///
+    /// TWO conditions must both hold to produce audio:
+    ///   1. At least one buffer crossed the RMS noise gate (first/last set)
+    ///   2. At least `minimumVoicedBuffers` total voiced buffers (≈128ms)
+    /// This kills: held-but-silent, accidental mic tap, single fan burst.
+    private func encodeVoicedSegment(
+        buffers: [AVAudioPCMBuffer],
+        firstVoiced: Int?,
+        lastVoiced: Int?,
+        voicedCount: Int
+    ) -> Data? {
+        guard let first = firstVoiced, let last = lastVoiced,
+              voicedCount >= minimumVoicedBuffers else {
+            print("Segment dropped (insufficient voiced audio: \(voicedCount) voiced of \(buffers.count), need ≥\(minimumVoicedBuffers) — no STT call)")
+            return nil
+        }
+        // Trim leading/trailing silence with padding on both sides. Interior
+        // silence is preserved — a mid-sentence pause stays a pause so Whisper's
+        // segmenter has a chance.
+        let start = max(0, first - leadingPaddingBufferCount)
+        let end = min(buffers.count - 1, last + trailingPaddingBufferCount)
+        guard start <= end else { return nil }
+        let selected = Array(buffers[start...end])
+        print("Segment encoded (voiced range \(first)...\(last), \(voicedCount) voiced of \(buffers.count) total, trimmed to \(start)...\(end))")
+        return convertBuffersToWAV(from: selected)
+    }
+
+    /// Continuous hands-free only: cut the audio accumulated for the current
+    /// utterance into a WAV, reset the accumulators, and let the tap keep
+    /// running for the next utterance (the engine is NOT stopped). Returns nil
+    /// when the cut lacks enough voiced content. Call on the main thread.
+    func harvestSegment() -> Data? {
+        guard continuousHandsFree, isRecording else { return nil }
+        bufferLock.lock()
+        let buffers = rawAudioBuffer
+        let first = firstVoicedIndex
+        let last = lastVoicedIndex
+        let voiced = voicedBufferCount
+        // Reset so the NEXT utterance starts clean; tap keeps appending.
+        rawAudioBuffer.removeAll(keepingCapacity: true)
+        firstVoicedIndex = nil
+        lastVoicedIndex = nil
+        voicedBufferCount = 0
+        consecutiveSilentBuffers = 0
+        silenceFiredForCurrentUtterance = false
+        bufferLock.unlock()
+        return encodeVoicedSegment(buffers: buffers, firstVoiced: first, lastVoiced: last, voicedCount: voiced)
+    }
+
+    /// Tear down the engine at the end of a continuous hands-free session. The
+    /// owner harvests the final in-flight utterance BEFORE calling this. No
+    /// grace period is needed — every utterance is already followed by ≥2s of
+    /// real trailing silence, so the trailing-padding has plenty to work with.
+    func stopContinuous() {
+        guard continuousHandsFree else { return }
+        inputNode?.removeTap(onBus: 0)
+        audioEngine?.stop()
+        isRecording = false
+        continuousHandsFree = false
+        consecutiveSilentBuffers = 0
+        silenceFiredForCurrentUtterance = false
+    }
+
+    /// Immediately tear down the engine/tap and DROP the current capture without
+    /// transcribing it — no grace period, no completion. Used when a push-to-talk
+    /// recording (started because Fn landed a beat before Control) must be
+    /// converted into a hands-free session: we discard the stray audio so the
+    /// engine can be restarted cleanly in continuous mode. Safe to call when not
+    /// recording (no-op). Main thread.
+    func abort() {
+        inputNode?.removeTap(onBus: 0)
+        audioEngine?.stop()
+        isRecording = false
+        continuousHandsFree = false
+        bufferLock.lock()
+        rawAudioBuffer.removeAll()
+        firstVoicedIndex = nil
+        lastVoicedIndex = nil
+        voicedBufferCount = 0
+        consecutiveSilentBuffers = 0
+        silenceFiredForCurrentUtterance = false
+        bufferLock.unlock()
+    }
+
     private func convertBuffersToWAV(from buffers: [AVAudioPCMBuffer]) -> Data? {
         guard !buffers.isEmpty else { return nil }
         

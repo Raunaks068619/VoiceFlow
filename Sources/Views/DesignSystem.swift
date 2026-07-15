@@ -299,21 +299,30 @@ struct VFBrandLogo: View {
 }
 
 struct VFMenuBarBrandIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     // The brand glyph is the 5-bar waveform mark. We draw it directly as a
     // monochrome template at menu-bar scale instead of templating the square
     // app-icon PNG — that asset's opaque square fills solid white when used as
     // a template, producing an oversized white block in the menu bar.
-    private static let barHeights: [CGFloat] = [6, 11, 15, 10, 6]
+    private static let barHeights: [CGFloat] = [7, 13, 17, 12, 7]
+
+    private var menuBarColor: Color {
+        colorScheme == .dark
+            ? Color(nsColor: .white).opacity(0.96)
+            : Color(nsColor: .black).opacity(0.86)
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 1.6) {
+        HStack(alignment: .center, spacing: 1.8) {
             ForEach(Self.barHeights.indices, id: \.self) { index in
                 Capsule()
-                    .frame(width: 2, height: Self.barHeights[index])
+                    .frame(width: 2.6, height: Self.barHeights[index])
             }
         }
-        .frame(width: 18, height: 16, alignment: .center)
-        .foregroundStyle(.primary)
+        .frame(width: 22, height: 20, alignment: .center)
+        .foregroundStyle(menuBarColor)
+        .shadow(color: Color(nsColor: .black).opacity(colorScheme == .dark ? 0.28 : 0), radius: 0.5, x: 0, y: 0)
         .accessibilityLabel(AppBrand.name)
     }
 }

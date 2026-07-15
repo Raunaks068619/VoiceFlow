@@ -473,6 +473,8 @@ struct RunDetailView: View {
                         metaLabel("Screenshot", value: "no active window")
                     case .failed:
                         metaLabel("Screenshot", value: "capture failed")
+                    case .skippedApp:
+                        metaLabel("Screenshot", value: "skipped for this app")
                     }
                 }
 

@@ -4,11 +4,8 @@ import SwiftUI
 final class FloatingNotesWindow: NSPanel {
     private static let defaultSize = NSSize(width: 540, height: 420)
     private static let overlayLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
-    private let store: VoiceNoteStore
-    private let captureOwner = "floating-notes-window"
 
     init(store: VoiceNoteStore = .shared) {
-        self.store = store
         let rootView = FloatingNotesRootView(store: store)
         let hostingController = NSHostingController(rootView: rootView)
 
@@ -40,14 +37,12 @@ final class FloatingNotesWindow: NSPanel {
         setContentSize(Self.defaultSize)
         center()
         setFrameAutosaveName("VordiNotesCompactWindow")
-        delegate = self
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
     func show() {
-        store.beginDictationCapture(owner: captureOwner)
         alphaValue = 1
         level = Self.overlayLevel
         deminiaturize(nil)
@@ -55,9 +50,6 @@ final class FloatingNotesWindow: NSPanel {
         makeKeyAndOrderFront(nil)
     }
 
-    deinit {
-        store.endDictationCapture(owner: captureOwner)
-    }
 }
 
 private struct FloatingNotesRootView: View {
@@ -65,14 +57,8 @@ private struct FloatingNotesRootView: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     var body: some View {
-        NotesWorkspaceView(store: store, surface: .floating, capturesDictation: false)
+        NotesWorkspaceView(store: store, surface: .floating, capturesDictation: true)
             .preferredColorScheme(themeManager.colorScheme)
             .ignoresSafeArea(.container, edges: .top)
-    }
-}
-
-extension FloatingNotesWindow: NSWindowDelegate {
-    func windowWillClose(_ notification: Notification) {
-        store.endDictationCapture(owner: captureOwner)
     }
 }

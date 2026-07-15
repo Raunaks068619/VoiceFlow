@@ -21,6 +21,7 @@ struct NotesWorkspaceView: View {
     let surface: Surface
     var onOpenFloatingNotes: (() -> Void)?
     var capturesDictation: Bool
+    @AppStorage("floating_notes_capture_enabled") private var isFloatingCaptureEnabled = true
 
     @State private var search = ""
     @State private var hoveredNoteID: UUID?
@@ -62,7 +63,7 @@ struct NotesWorkspaceView: View {
         }
         .background(Theme.mainContent)
         .onAppear {
-            if capturesDictation {
+            if shouldCaptureDictation {
                 store.beginDictationCapture(owner: captureOwner)
             }
             if surface == .floating && store.notes.isEmpty && !store.hasActiveDraftOrNote {
@@ -73,12 +74,31 @@ struct NotesWorkspaceView: View {
             }
         }
         .onDisappear {
-            if capturesDictation {
+            if store.isCapturingDictation(owner: captureOwner) {
                 store.endDictationCapture(owner: captureOwner)
             }
         }
         .onChange(of: store.activeNoteID) { _ in
             syncActiveFloatingTabWithStore()
+        }
+        .onChange(of: isFloatingCaptureEnabled) { _ in
+            syncDictationCaptureState()
+        }
+    }
+
+    private var shouldCaptureDictation: Bool {
+        guard capturesDictation else { return false }
+        return surface == .floating ? isFloatingCaptureEnabled : true
+    }
+
+    private func syncDictationCaptureState() {
+        let isCapturing = store.isCapturingDictation(owner: captureOwner)
+        if shouldCaptureDictation {
+            if !isCapturing {
+                store.beginDictationCapture(owner: captureOwner)
+            }
+        } else if isCapturing {
+            store.endDictationCapture(owner: captureOwner)
         }
     }
 
@@ -204,6 +224,10 @@ struct NotesWorkspaceView: View {
 
             Spacer(minLength: Theme.Space.sm)
 
+            if surface == .floating {
+                floatingCaptureToggle
+            }
+
             floatingTitleIcon("arrow.up.left.and.arrow.down.right", help: "Zoom window") {
                 NSApp.keyWindow?.zoom(nil)
             }
@@ -214,6 +238,35 @@ struct NotesWorkspaceView: View {
         }
         .frame(height: 32)
         .padding(.trailing, 8)
+    }
+
+    private var floatingCaptureToggle: some View {
+        Button {
+            isFloatingCaptureEnabled.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isFloatingCaptureEnabled ? "mic.fill" : "mic.slash")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(isFloatingCaptureEnabled ? "Capture" : "Off")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(isFloatingCaptureEnabled ? Theme.textPrimary : Theme.textSecondary)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(isFloatingCaptureEnabled ? Theme.surfaceElevated : Theme.surface.opacity(0.58))
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(isFloatingCaptureEnabled ? Theme.dividerStrong : Theme.divider, lineWidth: 1)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .vfClickableCursor()
+        .help(isFloatingCaptureEnabled ? "Dictations append to this note" : "Dictations will not append to this note")
     }
 
     private var floatingTabsBar: some View {

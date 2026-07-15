@@ -204,6 +204,79 @@ struct HotkeyBadge: View {
     }
 }
 
+/// Themed key-recorder control for the Settings → Shortcuts pane. Shows the
+/// current combo as badges, and on tap captures a new one via the shared
+/// AppKit `HotkeyCaptureRepresentable`. Rejected captures surface inline.
+private struct ThemedHotkeyRecorder: View {
+    let action: HotkeyAction
+    let binding: HotkeyBinding
+    /// Returns an error string if the capture was rejected, nil on success.
+    let commit: (HotkeyBinding) -> String?
+
+    @State private var isRecording = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                if isRecording {
+                    Text("Press keys…")
+                        .font(.vfCaption)
+                        .foregroundColor(Theme.textSecondary)
+                } else if binding.displayTokens.isEmpty {
+                    Text("Unset")
+                        .font(.vfCaption)
+                        .foregroundColor(Theme.textSecondary)
+                } else {
+                    ForEach(Array(binding.displayTokens.enumerated()), id: \.offset) { _, token in
+                        HotkeyBadge(label: token)
+                    }
+                }
+
+                Image(systemName: isRecording ? "record.circle" : "pencil")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(isRecording ? Theme.accent : Theme.textTertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.RadiusExtra.sm, style: .continuous)
+                    .fill(Theme.canvas)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.RadiusExtra.sm, style: .continuous)
+                    .strokeBorder(isRecording ? Theme.accent : Theme.divider,
+                                  lineWidth: isRecording ? 2 : 1)
+            )
+            .overlay(
+                HotkeyCaptureRepresentable(
+                    modifierOnly: action.isModifierOnly,
+                    isRecording: $isRecording,
+                    onCapture: { candidate in
+                        errorText = commit(candidate)
+                        isRecording = false
+                    },
+                    onCancel: { isRecording = false }
+                )
+                .allowsHitTesting(false)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isRecording.toggle()
+                if isRecording { errorText = nil }
+            }
+
+            if let errorText {
+                Text(errorText)
+                    .font(.vfCaption)
+                    .foregroundColor(.red)
+                    .frame(maxWidth: 190, alignment: .trailing)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+    }
+}
+
 /// Themed replacement for `.pickerStyle(.segmented)`. macOS's native
 /// segmented control has hostile padding, uses `.tint` as a fill color
 /// (burns bright orange — overkill for a frequent-use control), and
@@ -498,8 +571,10 @@ struct MainDashboardView: View {
 
     private enum SettingsPane: String, CaseIterable {
         case general
+        case shortcuts
         case dictation
         case aiModels
+        case agents
         case permissions
         case dataPrivacy
         case devMode
@@ -513,8 +588,10 @@ struct MainDashboardView: View {
         var title: String {
             switch self {
             case .general: return "General"
+            case .shortcuts: return "Shortcuts"
             case .dictation: return "Dictation"
             case .aiModels: return "AI Models"
+            case .agents: return "Connect Agents"
             case .permissions: return "Permissions"
             case .dataPrivacy: return "Data & Privacy"
             case .devMode: return "Dev Mode"
@@ -525,8 +602,10 @@ struct MainDashboardView: View {
         var subtitle: String {
             switch self {
             case .general: return "Language, output, and feedback."
+            case .shortcuts: return "Push-to-talk, hands-free, and exit keys."
             case .dictation: return "Provider, keys, and streaming."
             case .aiModels: return "Post-processing and memory AI."
+            case .agents: return "Let Claude, Cursor & Codex read your dictations."
             case .permissions: return "macOS access required for capture and typing."
             case .dataPrivacy: return "Run history and custom vocabulary."
             case .devMode: return "Beta access and developer routing."
@@ -537,8 +616,10 @@ struct MainDashboardView: View {
         var icon: String {
             switch self {
             case .general: return "slider.horizontal.3"
+            case .shortcuts: return "keyboard"
             case .dictation: return "waveform"
             case .aiModels: return "brain.head.profile"
+            case .agents: return "link.badge.plus"
             case .permissions: return "lock.shield"
             case .dataPrivacy: return "externaldrive"
             case .devMode: return "hammer"
@@ -548,14 +629,14 @@ struct MainDashboardView: View {
 
         var group: Group {
             switch self {
-            case .general, .dictation, .aiModels:
+            case .general, .shortcuts, .dictation, .aiModels, .agents:
                 return .settings
             case .permissions, .dataPrivacy, .devMode, .setup:
                 return .system
             }
         }
 
-        static let settingsGroup: [SettingsPane] = [.general, .dictation, .aiModels]
+        static let settingsGroup: [SettingsPane] = [.general, .shortcuts, .dictation, .aiModels, .agents]
         static let systemGroup: [SettingsPane] = [.permissions, .dataPrivacy, .devMode, .setup]
     }
 
@@ -567,6 +648,7 @@ struct MainDashboardView: View {
     @State private var selectedTab: Tab = .home
     @State private var preferredInsightTab: String? = nil
     @State private var selectedSettingsPane: SettingsPane = .general
+    @ObservedObject private var hotkeys = HotkeySettingsStore.shared
 
     // General tab
     @State private var selectedLanguage: String = UserDefaults.standard.string(forKey: "language") ?? "hi"
@@ -600,6 +682,10 @@ struct MainDashboardView: View {
     // directly into OpenAI's Realtime API for lower perceived latency on
     // long dictations. Batch path remains the safety net.
     @State private var realtimeStreaming: Bool = UserDefaults.standard.bool(forKey: "realtime_streaming_enabled")
+    // PROTOTYPE (Option B): type realtime partials straight into the focused app.
+    @State private var liveInject: Bool = UserDefaults.standard.bool(forKey: LiveInjectionController.enabledKey)
+    // On-device live preview (Apple STT) → notch. Works on any provider + hands-free.
+    @State private var onDevicePreview: Bool = UserDefaults.standard.bool(forKey: AppleSpeechLivePreview.enabledKey)
     @State private var openAIKey: String = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
     @State private var groqKey: String = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
     @State private var polishBackendId: String = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey) ?? PolishBackend.defaultId
@@ -1711,7 +1797,10 @@ struct MainDashboardView: View {
                 .padding(.horizontal, Theme.Layout.contentHPad)
                 .padding(.top, Theme.Layout.contentVPad)
                 .padding(.bottom, 48)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                // Center the capped content block on wide screens instead of
+                // pinning it left (which left a big empty gutter on the right).
+                // `.top` = horizontal-center, matching NotesWorkspaceView.
+                .frame(maxWidth: .infinity, alignment: .top)
         }
         .background(Theme.mainContent)
     }
@@ -2541,10 +2630,14 @@ struct MainDashboardView: View {
         switch selectedSettingsPane {
         case .general:
             generalSettingsPane
+        case .shortcuts:
+            shortcutsSettingsPane
         case .dictation:
             dictationSettingsPane
         case .aiModels:
             aiModelsSettingsPane
+        case .agents:
+            AgentConnectView()
         case .permissions:
             permissionsSettingsPane
         case .dataPrivacy:
@@ -2558,6 +2651,60 @@ struct MainDashboardView: View {
             )
         case .setup:
             setupSettingsPane
+        }
+    }
+
+    private var shortcutsSettingsPane: some View {
+        VStack(spacing: 0) {
+            VFFormSection(header: "Shortcuts") {
+                ForEach(Array(HotkeyAction.allCases.enumerated()), id: \.offset) { index, action in
+                    if index > 0 {
+                        VFDivider(inset: Theme.Space.xl)
+                    }
+                    VFFormRow(
+                        label: action.title,
+                        description: action.subtitle
+                    ) {
+                        ThemedHotkeyRecorder(
+                            action: action,
+                            binding: hotkeys.config[action],
+                            commit: { candidate in
+                                hotkeys.setBinding(candidate, for: action)
+                            }
+                        )
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                Text("Custom push-to-talk and hands-free shortcuts need a modifier combo (for example ⌃⌥) so a stray key press can't trigger dictation. fn stays the default.")
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    hotkeys.resetToDefaults()
+                } label: {
+                    Text("Reset to defaults")
+                        .font(.vfCalloutSemibold)
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, Theme.Space.lg)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: Theme.RadiusExtra.sm, style: .continuous)
+                                .fill(Theme.surface)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.RadiusExtra.sm, style: .continuous)
+                                .strokeBorder(Theme.divider, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .vfClickableCursor()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Layout.contentHPad)
+            .padding(.top, Theme.Space.lg)
         }
     }
 
@@ -2698,6 +2845,35 @@ struct MainDashboardView: View {
                         set: { newValue in
                             realtimeStreaming = newValue
                             UserDefaults.standard.set(newValue, forKey: "realtime_streaming_enabled")
+                        }
+                    ))
+                }
+                VFDivider(inset: Theme.Space.xl)
+                VFFormRow(
+                    label: "Live preview in notch (on-device)",
+                    description: "Shows your words live in the notch as you speak, using Apple's on-device recognition. Works on any provider — including free Groq — and in hands-free. The final transcript still comes from your provider."
+                ) {
+                    VFSwitch(isOn: Binding(
+                        get: { onDevicePreview },
+                        set: { newValue in
+                            onDevicePreview = newValue
+                            UserDefaults.standard.set(newValue, forKey: AppleSpeechLivePreview.enabledKey)
+                            // Trigger the Speech Recognition permission prompt now
+                            // so the first dictation already has a live preview.
+                            if newValue { AppleSpeechLivePreview.requestAuthorization { _ in } }
+                        }
+                    ))
+                }
+                VFDivider(inset: Theme.Space.xl)
+                VFFormRow(
+                    label: "Live type-as-you-speak (experimental)",
+                    description: "Types words into the focused app as you speak, then swaps in the final polished text. Needs Realtime streaming on (OpenAI only). Can be janky across apps."
+                ) {
+                    VFSwitch(isOn: Binding(
+                        get: { liveInject },
+                        set: { newValue in
+                            liveInject = newValue
+                            UserDefaults.standard.set(newValue, forKey: LiveInjectionController.enabledKey)
                         }
                     ))
                 }

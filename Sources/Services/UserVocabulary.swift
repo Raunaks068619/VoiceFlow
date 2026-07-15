@@ -193,7 +193,9 @@ enum UserVocabulary {
             // single input token.
             if idx == 0 && canonicalTokens.count > 1 {
                 let joined = canonicalTokens.joined()
-                if matches(inputToken, expected: joined) {
+                // EXACT only here — a fuzzy match would split a single real
+                // word into the multi-token canonical (e.g. "react" → "re act").
+                if inputToken == joined.lowercased() {
                     return tokenEnd - start
                 }
             }
@@ -207,13 +209,18 @@ enum UserVocabulary {
     /// either exactly or within Levenshtein distance 1 (only for tokens
     /// ≥4 chars to avoid "yes" matching "yet" type false positives).
     private static func matches(_ input: String, expected: String) -> Bool {
-        if input == expected { return true }
-        // Length-based fuzz gating — fuzzy match needs both terms to be
-        // long enough that distance 1 is meaningful.
-        guard input.count >= 4, expected.count >= 4,
+        if input == expected.lowercased() { return true }
+        // Fuzzy (Levenshtein-1) gating. The old 4-char floor silently
+        // rewrote common English words to vocab canonicals — "from"→"form",
+        // "word"→"ward", "were"→"here" — because they're one edit apart.
+        // Require BOTH terms ≥6 chars and the input no shorter than the
+        // canonical, so we only repair Whisper misspellings of genuinely
+        // long, distinctive proper nouns, never hijack short real words.
+        guard expected.count >= 6,
+              input.count >= max(6, expected.count),
               abs(input.count - expected.count) <= 1
         else { return false }
-        return levenshtein(input, expected) <= 1
+        return levenshtein(input, expected.lowercased()) <= 1
     }
 
     /// Returns true if char is a word-component (letter/digit/apostrophe).

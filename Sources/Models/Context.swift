@@ -188,6 +188,11 @@ enum ScreenshotCaptureStatus: String, Codable {
     case denied
     case unavailable
     case failed
+    /// We deliberately did not screenshot this app — it's on the exclusion
+    /// list (a dev/text surface by default, or a user override). Distinct
+    /// from `.disabled` (feature off globally) so the Run Log can explain
+    /// *why* there's no image.
+    case skippedApp
 }
 
 struct ContextSummary: Codable {
@@ -333,5 +338,18 @@ enum AppSurfaceCatalog {
         case .ide, .terminal, .database: return true
         case .browser, .chat, .notes, .mail, .office, .design, .unknown: return false
         }
+    }
+
+    /// True when a window screenshot adds real signal for context
+    /// summarization. Dev/text surfaces (IDE, terminal, DB client) are
+    /// excluded by default: their content is text the vision model would
+    /// just OCR back at high token cost, and the AX/selection path already
+    /// captures it more cheaply. Everything else — browsers, design tools,
+    /// docs, chat — benefits from the visual layout, so we keep the shot.
+    ///
+    /// This is only the *category default*. Per-app user overrides are
+    /// layered on top in `ContextProvider.shouldCaptureScreenshot`.
+    static func benefitsFromScreenshot(_ surface: AppSurface) -> Bool {
+        !isDeveloperSurface(surface)
     }
 }

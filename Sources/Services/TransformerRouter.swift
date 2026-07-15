@@ -332,11 +332,14 @@ private struct SystemActionPhraseParser {
         guard !trimmed.isEmpty else { return nil }
 
         let lowercased = trimmed.lowercased()
-        guard let prefix = launchPrefixes.first(where: { lowercased.hasPrefix($0) }) else {
+        let command: String
+        if let prefix = launchPrefixes.first(where: { lowercased.hasPrefix($0) }) {
+            command = String(trimmed.dropFirst(prefix.count))
+        } else if let glued = gluedCommand(from: trimmed) {
+            command = glued
+        } else {
             return nil
         }
-
-        let command = String(trimmed.dropFirst(prefix.count))
         guard !command.isEmpty else { return nil }
 
         let parts = splitCommand(command)
@@ -349,6 +352,46 @@ private struct SystemActionPhraseParser {
 
         return ParsedSystemAction(appName: appName, insertionText: insertionText)
     }
+
+    /// Whisper frequently glues the launch verb onto the app name as one
+    /// CamelCase token — production run-logs show "OpenVordi", "OpenClaude",
+    /// "OpenChrome" — very likely because the vocabulary prompt's "OpenAI"
+    /// teaches the decoder that Open+Word compounds are a valid style
+    /// ("launch" has no such compound in the vocab and never glues). The
+    /// glued form made "open <app>" silently fall through to normal cleanup
+    /// while "launch <app>" kept working.
+    ///
+    /// Detection is deliberately conservative: the verb must be immediately
+    /// followed by an UPPERCASE letter (a CamelCase boundary). Lowercase
+    /// continuations ("opening", "openness", "started") can never match. A
+    /// false split like "OpenNodes" is harmless — the remainder only becomes
+    /// an action if it resolves to an actually-installed app; otherwise the
+    /// transcript flows through cleanup untouched.
+    private func gluedCommand(from trimmed: String) -> String? {
+        // Real Open-compound words that must never be split. "OpenAI" alone
+        // would otherwise yield the query "ai", which can fuzzy-match
+        // AI-suffixed app names and launch something the user never asked for.
+        let firstToken = trimmed
+            .split(whereSeparator: { $0.isWhitespace })
+            .first.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) } ?? ""
+        if Self.gluedStoplist.contains(firstToken) { return nil }
+
+        let lowercased = trimmed.lowercased()
+        for prefix in launchPrefixes {
+            let verb = prefix.dropLast() // "open " → "open"
+            guard lowercased.hasPrefix(verb) else { continue }
+            let rest = trimmed.dropFirst(verb.count)
+            guard let first = rest.first, first.isUppercase else { continue }
+            return String(rest)
+        }
+        return nil
+    }
+
+    /// Legitimate glued compounds that start with a launch verb. Never split.
+    private static let gluedStoplist: Set<String> = [
+        "openai", "openoffice", "opengl", "openvpn", "opensource",
+        "startup", "startups",
+    ]
 
     private func splitCommand(_ command: String) -> (app: String, insertion: String?) {
         for separator in insertionSeparators {
@@ -414,6 +457,9 @@ private struct InstalledApplicationResolver {
         "cursor": ["Cursor"],
         "vs code": ["Visual Studio Code"],
         "vscode": ["Visual Studio Code"],
+        // Whisper mishearing of "VS Code" observed repeatedly in run-logs
+        // ("OpenBS Code"). No real app is named "BS Code", so aliasing is safe.
+        "bs code": ["Visual Studio Code"],
         "visual studio code": ["Visual Studio Code"],
         "terminal": ["Terminal"],
         "iterm": ["iTerm", "iTerm2"],
@@ -433,6 +479,7 @@ private struct InstalledApplicationResolver {
         "visual studio code": ["com.microsoft.VSCode"],
         "vs code": ["com.microsoft.VSCode"],
         "vscode": ["com.microsoft.VSCode"],
+        "bs code": ["com.microsoft.VSCode"],
         "chrome": ["com.google.Chrome"],
         "google chrome": ["com.google.Chrome"],
         "slack": ["com.tinyspeck.slackmacgap"],

@@ -34,6 +34,8 @@
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Vordi needs microphone access to transcribe your voice.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Vordi uses on-device speech recognition to show a live preview of your words while you dictate. The final transcript still comes from your chosen provider.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Vordi uses screen recording to capture the active window and create transcription context summaries.</string>
 </dict>

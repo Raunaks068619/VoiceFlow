@@ -21,6 +21,7 @@ struct NotchPillView: View {
     private let expandedPanelHeight = NotchPillScreenGeometry.expandedPanelHeight
     private let listeningPanelHeight = NotchPillScreenGeometry.listeningPanelHeight
     private let errorPanelHeight = NotchPillScreenGeometry.errorPanelHeight
+    private let permissionsPanelHeight = NotchPillScreenGeometry.permissionsPanelHeight
     // Single interactive spring drives the whole morph — size, corner radii,
     // and content together — exactly like the comparison island. No separate
     // window-frame animation fights it, so corners stay rounded throughout.
@@ -80,13 +81,13 @@ struct NotchPillView: View {
     }
 
     private var inlineTranscriptHeight: CGFloat {
-        0
+        showsInlineTranscript ? 26 : 0
     }
 
     private var expandedPanelHeightValue: CGFloat {
         switch model.state {
         case .panelHover:
-            return model.activePanelMode.panelHeight
+            return model.hasAllPermissions ? model.activePanelMode.panelHeight : permissionsPanelHeight
         case .panelTranscript:
             return listeningPanelHeight
         case .panelError:
@@ -217,12 +218,17 @@ struct NotchPillView: View {
     private var inlineTranscriptStrip: some View {
         if showsInlineTranscript {
             HStack(spacing: 3) {
-                Text(inlineTranscriptText)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(NotchPillPalette.mark.opacity(0.48))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Marquee-style: keep the *newest* words in view. As the live
+                // transcript grows past the pill width, older words scroll off
+                // the left so the trailing end (what's being said now) stays
+                // visible next to the cursor — instead of freezing on the start.
+                TrailingScrollText(
+                    text: inlineTranscriptText,
+                    font: .system(size: 11, weight: .regular),
+                    color: NotchPillPalette.mark.opacity(0.48)
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: 15)
 
                 NotchTranscriptCursorView(color: pulseColor)
                     .frame(width: 2, height: 13)
@@ -249,7 +255,11 @@ struct NotchPillView: View {
                 case .panelError(let title, let desc, let tip):
                     errorPanelContent(title: title, desc: desc, tip: tip)
                 default:
-                    hoverPanelContent
+                    if model.hasAllPermissions {
+                        hoverPanelContent
+                    } else {
+                        permissionsPanelContent
+                    }
                 }
             }
             .allowsHitTesting(true)
@@ -282,6 +292,8 @@ struct NotchPillView: View {
             .padding(.horizontal, chevronGutterWidth)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .transition(modeSlideTransition)
+
+            panelFooterStepper
         }
         .clipped()
         .overlay(modeChevrons)
@@ -297,6 +309,103 @@ struct NotchPillView: View {
                     cyclePanelMode(forward: value.translation.width < 0)
                 }
         )
+    }
+
+    // Mirrors `errorPanelContent` exactly (paddings, spacings, text treatment)
+    // so the permissions notice resolves to the same layout as every other
+    // error state (e.g. "no transcription"). Only the content differs: the
+    // Setup badge, Fix/close actions, and the Missing-permissions box.
+    private var permissionsPanelContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 9.5, weight: .semibold))
+
+                    Text("Setup")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.2)
+                }
+                .foregroundColor(NotchPillPalette.warning.opacity(0.92))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(NotchPillPalette.warning.opacity(0.10))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(NotchPillPalette.warning.opacity(0.18), lineWidth: 1)
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    openPermissionsFlow()
+                } label: {
+                    Text("Fix")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 58, height: 22)
+                }
+                .buttonStyle(NotchErrorPrimaryButtonStyle(accent: NotchPillPalette.warning))
+                .vfClickableCursor()
+
+                Button {
+                    closePanel()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(NotchErrorSecondaryButtonStyle())
+                .vfClickableCursor()
+                .help("Close")
+            }
+            .padding(.bottom, 7)
+
+            Text("Permissions required")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(NotchPillPalette.mark.opacity(0.86))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.bottom, 4)
+
+            Text("Complete permissions before using transcriptions.")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundColor(NotchPillPalette.mark.opacity(0.48))
+                .lineSpacing(2)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 8)
+
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "lock.open.fill")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(NotchPillPalette.warning.opacity(0.76))
+                    .frame(width: 12, height: 14)
+
+                Text("Missing: \(missingPermissionsText)")
+                    .font(.system(size: 10.5, weight: .regular))
+                    .foregroundColor(NotchPillPalette.mark.opacity(0.46))
+                    .lineSpacing(2)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(NotchPillPalette.mark.opacity(0.035))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(NotchPillPalette.mark.opacity(0.055), lineWidth: 1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 9)
+        .padding(.bottom, 10)
     }
 
     private var isPanelHoverOpen: Bool {
@@ -342,6 +451,17 @@ struct NotchPillView: View {
         }
         .padding(.horizontal, 4)
         .padding(.top, 32)
+    }
+
+    private var panelFooterStepper: some View {
+        HStack {
+            Spacer(minLength: 0)
+            modePageDots
+            Spacer(minLength: 0)
+        }
+        .frame(height: 14)
+        .padding(.bottom, 2)
+        .allowsHitTesting(true)
     }
 
     private func modeChevronButton(forward: Bool) -> some View {
@@ -580,42 +700,43 @@ struct NotchPillView: View {
     }
 
     private var panelHeader: some View {
-        HStack(spacing: 8) {
+        ZStack {
             Text(model.activePanelMode.title)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(NotchPillPalette.mark.opacity(0.34))
                 .textCase(.uppercase)
                 .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .id("panelTitle-\(model.activePanelMode.rawValue)")
                 .transition(.opacity)
 
-            modePageDots
+            HStack(spacing: 8) {
+                Button {
+                    openSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(NotchPanelIconButtonStyle())
+                .vfClickableCursor()
+                .help("Settings")
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            Button {
-                openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 24, height: 24)
+                Button {
+                    closePanel()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(NotchPanelIconButtonStyle())
+                .vfClickableCursor()
+                .help("Close")
             }
-            .buttonStyle(NotchPanelIconButtonStyle())
-            .vfClickableCursor()
-            .help("Settings")
-
-            Button {
-                closePanel()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(NotchPanelIconButtonStyle())
-            .vfClickableCursor()
-            .help("Close")
         }
-        .padding(.leading, 12)
+        .padding(.leading, 10)
         .padding(.trailing, 10)
         .frame(height: 32)
     }
@@ -635,18 +756,77 @@ struct NotchPillView: View {
     }
 
     private var emptyTranscriptionRow: some View {
-        HStack(spacing: 8) {
-            VFBrandLogo(size: 15, variant: .dark, cornerRadius: 4)
-                .opacity(0.72)
+        HStack(alignment: .center, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                NotchPillPalette.blue.opacity(0.16),
+                                NotchPillPalette.cyan.opacity(0.08)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
 
-            Text("No transcriptions yet")
-                .font(.system(size: 11, weight: .regular))
-                .foregroundColor(NotchPillPalette.mark.opacity(0.46))
+                WaveformBarsView(audioLevel: 0.58, color: NotchPillPalette.cyan)
+                    .frame(width: 24, height: 16)
+                    .opacity(0.88)
+            }
+            .frame(width: 34, height: 36)
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(NotchPillPalette.cyan.opacity(0.12), lineWidth: 1)
+            }
 
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Start your first transcription")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(NotchPillPalette.mark.opacity(0.84))
+                    .lineLimit(1)
+
+                HStack(spacing: 5) {
+                    Text("Hold")
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(NotchPillPalette.mark.opacity(0.42))
+
+                    Text("fn")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(NotchPillPalette.mark.opacity(0.60))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(NotchPillPalette.mark.opacity(0.075))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .stroke(NotchPillPalette.mark.opacity(0.12), lineWidth: 1)
+                        }
+
+                    Text("speak, then release")
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(NotchPillPalette.mark.opacity(0.42))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            Button {
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(NotchPanelIconButtonStyle())
+            .vfClickableCursor()
+            .help("Check transcription settings")
         }
-        .frame(height: 25)
-        .padding(.horizontal, 8)
+        .frame(height: 52)
+        .padding(.horizontal, 9)
         .background(NotchPanelRowBackground())
     }
 
@@ -989,9 +1169,16 @@ struct NotchPillView: View {
     }
 
     private var pillWidth: CGFloat {
+        if model.hasAllPermissions {
+            switch model.state {
+            case .idle, .proximity:
+                return defaultPillWidth
+            default:
+                break
+            }
+        }
+
         switch model.state {
-        case .idle, .proximity:
-            return defaultPillWidth
         case .panelHover, .panelTranscript, .panelError:
             return min(
                 canvasWidth,
@@ -1044,7 +1231,18 @@ struct NotchPillView: View {
     }
 
     private var showsInlineTranscript: Bool {
-        false
+        // Show the live-transcript strip while actively dictating and we have
+        // partial text to show. Driven by whatever feeds `liveTranscript` — the
+        // on-device preview (any provider, incl. hands-free) or the OpenAI
+        // realtime stream (push-to-talk). Was previously stubbed to `false`,
+        // which silently dropped every live partial.
+        guard !inlineTranscriptText.isEmpty else { return false }
+        switch model.state {
+        case .listening, .handsFree:
+            return true
+        default:
+            return false
+        }
     }
 
     private var showsExpandedPanel: Bool {
@@ -1111,9 +1309,9 @@ struct NotchPillView: View {
         case .panelTranscript:
             return "Listening"
         case .panelHover:
-            return AppBrand.name
+            return model.hasAllPermissions ? AppBrand.name : "Permissions required"
         case .idle, .proximity:
-            return model.hasAllPermissions ? "Ready" : "Setup"
+            return model.hasAllPermissions ? "Ready" : "Permissions required"
         }
     }
 
@@ -1228,7 +1426,7 @@ struct NotchPillView: View {
         case .handsFree:
             return "Hands-free mode is active"
         case .idle, .proximity, .panelHover:
-            return model.hasAllPermissions ? "Open quick panel" : "Click to fix permissions"
+            return model.hasAllPermissions ? "Open quick panel" : "Complete permissions to use transcriptions"
         case .panelTranscript:
             return "\(AppBrand.name) is listening"
         }
@@ -1239,7 +1437,7 @@ struct NotchPillView: View {
         case .idle where !model.hasAllPermissions,
              .proximity where !model.hasAllPermissions,
              .panelHover where !model.hasAllPermissions:
-            NotificationCenter.default.post(name: Notification.Name("Vordi.OpenOnboardingPermissions"), object: nil)
+            openPermissionsFlow()
         case .errorMini(let message):
             routeErrorTap(message)
         case .panelError(let title, _, _):
@@ -1325,6 +1523,11 @@ struct NotchPillView: View {
         NotificationCenter.default.post(name: Notification.Name("Vordi.OpenRunLog"), object: nil)
     }
 
+    private func openPermissionsFlow() {
+        model.state = .idle
+        NotificationCenter.default.post(name: Notification.Name("Vordi.OpenOnboardingPermissions"), object: nil)
+    }
+
     private func openDashboardTab(_ tab: String) {
         model.state = .idle
         NotificationCenter.default.post(name: Notification.Name("Vordi.OpenMainWindow"), object: nil)
@@ -1384,11 +1587,79 @@ struct NotchPillView: View {
         if lower.contains("clipboard") || lower.contains("copied") {
             model.state = .idle
         } else if lower.contains("permission") || lower.contains("microphone") {
-            NotificationCenter.default.post(name: Notification.Name("Vordi.OpenOnboardingPermissions"), object: nil)
+            openPermissionsFlow()
         } else if lower.contains("audio") || lower.contains("input") {
             NotificationCenter.default.post(name: Notification.Name("Vordi.OpenSettings"), object: nil)
         } else {
             NotificationCenter.default.post(name: Notification.Name("Vordi.OpenRunLog"), object: nil)
         }
+    }
+
+    private var missingPermissionsText: String {
+        let names = model.missingPermissionNames
+        if names.isEmpty {
+            return "Microphone, Accessibility, and Input Monitoring"
+        }
+        return names.joined(separator: ", ")
+    }
+}
+
+/// A single line of text pinned to its **trailing** (newest) end. When the text
+/// is wider than the available width, older words scroll off the left so the
+/// most-recent words stay in view — a live-caption marquee that follows the
+/// speaker instead of freezing on the sentence's start.
+///
+/// How it works: the text is laid out at its natural width, shifted left by
+/// exactly its overflow so the trailing edge lands at the container's right
+/// edge, then clipped. The shift is animated, so growing text slides smoothly.
+/// A short fade on the left edge signals there's more text scrolled off-screen.
+private struct TrailingScrollText: View {
+    let text: String
+    let font: Font
+    let color: Color
+
+    @State private var textWidth: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            let overflow = max(0, textWidth - geo.size.width)
+            Text(text)
+                .font(font)
+                .foregroundColor(color)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: TrailingTextWidthKey.self,
+                            value: proxy.size.width
+                        )
+                    }
+                )
+                .offset(x: -overflow)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
+                .clipped()
+                .mask(
+                    LinearGradient(
+                        stops: overflow > 0
+                            ? [.init(color: .clear, location: 0),
+                               .init(color: .black, location: 0.10),
+                               .init(color: .black, location: 1)]
+                            : [.init(color: .black, location: 0),
+                               .init(color: .black, location: 1)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .animation(.easeOut(duration: 0.18), value: overflow)
+        }
+        .onPreferenceChange(TrailingTextWidthKey.self) { textWidth = $0 }
+    }
+}
+
+private struct TrailingTextWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

@@ -4,6 +4,7 @@ import AVFoundation
 
 struct SettingsView: View {
     @ObservedObject var permissionService: PermissionService
+    @ObservedObject private var hotkeys = HotkeySettingsStore.shared
     @StateObject private var localDetector = LocalModelDetector.shared
     @State private var apiKey: String = ""
     @State private var groqApiKey: String = ""
@@ -15,6 +16,7 @@ struct SettingsView: View {
     @State private var noiseGateThreshold: Double = 0.015
     @State private var runLogEnabled: Bool = true
     @State private var runLogCapped: Bool = true
+    @State private var analyticsEnabled: Bool = true
     @State private var feedbackSurfaceStyle: String = FeedbackSurfaceStyle.current.rawValue
     @State private var showSaveConfirmation = false
 
@@ -88,6 +90,28 @@ struct SettingsView: View {
                 Text((FeedbackSurfaceStyle(rawValue: feedbackSurfaceStyle) ?? .dynamicNotch).subtitle)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            Section("Shortcuts") {
+                ForEach(HotkeyAction.allCases) { action in
+                    HotkeyShortcutRow(
+                        action: action,
+                        binding: hotkeys.config[action],
+                        commit: { candidate in
+                            hotkeys.setBinding(candidate, for: action)
+                        }
+                    )
+                }
+
+                HStack {
+                    Button("Reset to defaults") { hotkeys.resetToDefaults() }
+                    Spacer()
+                }
+
+                Text("Push-to-talk and hands-free need a modifier combo (e.g. ⌃⌥) so a stray key press can't trigger dictation. fn stays the default.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
@@ -227,6 +251,15 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Privacy") {
+                VStack(alignment: .leading, spacing: 8) {
+                    VFToggle(label: "Share anonymous usage analytics", isOn: $analyticsEnabled)
+                    Text("Helps improve \(AppBrand.name) by sharing which features get used. Anonymous and never includes your transcripts or audio. Turn off anytime.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Section("Microphone Filter") {
                 VStack(alignment: .leading, spacing: 8) {
                     Slider(value: $noiseGateThreshold, in: 0.001...0.05, step: 0.001)
@@ -316,6 +349,13 @@ struct SettingsView: View {
         .onChange(of: runLogEnabled) { _ in
             saveSettings()
         }
+        .onChange(of: analyticsEnabled) { newValue in
+            // Record the opt-out BEFORE persisting it — track() reads the stored
+            // flag, which is still "enabled" at this point. After saveSettings,
+            // analytics is off. Lets us gauge how many users disable it.
+            if !newValue { AnalyticsClient.shared.track("analytics_opt_out") }
+            saveSettings()
+        }
         .onChange(of: runLogCapped) { newValue in
             saveSettings()
             // Toggling the cap ON with an over-cap history should feel
@@ -368,6 +408,11 @@ struct SettingsView: View {
         } else {
             runLogCapped = true
         }
+        if UserDefaults.standard.object(forKey: AnalyticsClient.analyticsEnabledKey) != nil {
+            analyticsEnabled = UserDefaults.standard.bool(forKey: AnalyticsClient.analyticsEnabledKey)
+        } else {
+            analyticsEnabled = true
+        }
         feedbackSurfaceStyle = FeedbackSurfaceStyle.current.rawValue
     }
 
@@ -382,6 +427,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(noiseGateThreshold, forKey: "noise_gate_threshold")
         UserDefaults.standard.set(runLogEnabled, forKey: "run_log_enabled")
         UserDefaults.standard.set(runLogCapped, forKey: "run_log_cap_enabled")
+        UserDefaults.standard.set(analyticsEnabled, forKey: AnalyticsClient.analyticsEnabledKey)
         UserDefaults.standard.set(feedbackSurfaceStyle, forKey: FeedbackSurfaceStyle.userDefaultsKey)
     }
 
@@ -422,13 +468,14 @@ struct SettingsView: View {
 /// Four-step onboarding flow. First value is a real dictation test, not a
 /// separate tutorial mode.
 enum OnboardingStep: Int, CaseIterable {
-    case features, permissions, preferences, test
+    case features, permissions, preferences, handsFree, test
 
     var title: String {
         switch self {
         case .features:    return "Features"
         case .permissions: return "Permissions"
         case .preferences: return "Preferences"
+        case .handsFree:   return "Hands-free"
         case .test:        return "Test"
         }
     }
@@ -436,10 +483,44 @@ enum OnboardingStep: Int, CaseIterable {
 
 @MainActor
 final class OnboardingCoordinator: ObservableObject {
-    @Published var currentStep: OnboardingStep
+    /// True while the wizard is open and not yet finished. Persisted so a
+    /// macOS "Quit & Reopen" — which is forced when the user grants Screen
+    /// Recording or Input Monitoring — resumes onboarding on relaunch instead
+    /// of stranding the user on the dashboard.
+    nonisolated static let inProgressKey = "onboarding_in_progress"
+    /// Raw value of the step the user was last on, so the relaunch resumes at
+    /// the same place rather than restarting from Features.
+    nonisolated static let currentStepKey = "onboarding_current_step"
+
+    @Published var currentStep: OnboardingStep {
+        didSet { UserDefaults.standard.set(currentStep.rawValue, forKey: Self.currentStepKey) }
+    }
 
     init(initialStep: OnboardingStep = .features) {
         self.currentStep = initialStep
+        // Opening the wizard marks onboarding as active and records the step.
+        // `didSet` doesn't fire for the initializer assignment above, so we
+        // persist the starting step explicitly.
+        UserDefaults.standard.set(true, forKey: Self.inProgressKey)
+        UserDefaults.standard.set(initialStep.rawValue, forKey: Self.currentStepKey)
+    }
+
+    /// Marks onboarding finished and clears the in-progress/resume state.
+    /// Call this instead of setting `has_completed_onboarding` directly so the
+    /// resume flags never linger past completion.
+    nonisolated static func markFinished() {
+        UserDefaults.standard.set(true, forKey: "has_completed_onboarding")
+        UserDefaults.standard.set(false, forKey: inProgressKey)
+        UserDefaults.standard.removeObject(forKey: currentStepKey)
+    }
+
+    /// Clears the resume state when the user dismisses the wizard themselves
+    /// (close button / Cmd-W) so it doesn't force itself back on next launch.
+    /// A "Quit & Reopen" relaunch does NOT route through here, so the
+    /// resume-after-grant flow is preserved.
+    nonisolated static func markDismissed() {
+        UserDefaults.standard.set(false, forKey: inProgressKey)
+        UserDefaults.standard.removeObject(forKey: currentStepKey)
     }
 
     func advance() {
@@ -513,6 +594,8 @@ struct OnboardingView: View {
             OnboardingPermissionsStep(permissionService: permissionService)
         case .preferences:
             OnboardingPreferencesStep()
+        case .handsFree:
+            OnboardingHandsFreeStep()
         case .test:
             OnboardingTestStep(runStore: runStore)
         }
@@ -547,7 +630,8 @@ struct OnboardingView: View {
                 style: .primary
             ) {
                 if coordinator.isLastStep {
-                    UserDefaults.standard.set(true, forKey: "has_completed_onboarding")
+                    OnboardingCoordinator.markFinished()
+                    AnalyticsClient.shared.track("onboarding_completed")
                     onDone()
                 } else {
                     coordinator.advance()
@@ -681,6 +765,11 @@ private struct OnboardingFeaturesStep: View {
                     .font(.vfCaption)
                     .foregroundColor(Theme.textTertiary)
             }
+
+            Text("\(AppBrand.name) shares anonymous usage analytics to improve the app — never your transcripts or audio. Turn it off anytime in Settings → Privacy.")
+                .font(.vfCaption)
+                .foregroundColor(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -706,6 +795,92 @@ private struct OnboardingFeaturesStep: View {
         }
         .padding(Theme.Space.md)
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+        .background(Theme.surface)
+    }
+}
+
+// MARK: - Step: Hands-free continuous dictation
+
+private struct OnboardingHandsFreeStep: View {
+    private struct Beat: Identifiable {
+        let id: String
+        let icon: String
+        let title: String
+        let copy: String
+    }
+
+    private let beats: [Beat] = [
+        .init(id: "start", icon: "hand.raised.fill", title: "Start hands-free",
+              copy: "Press Control + fn together. Recording begins and stays on — no need to hold any key."),
+        .init(id: "pause", icon: "pause.circle.fill", title: "Speak, then pause",
+              copy: "Say a sentence and pause for about 2 seconds. That chunk is transcribed and pasted into wherever you're typing."),
+        .init(id: "continue", icon: "arrow.triangle.2.circlepath", title: "Keep going",
+              copy: "Recording continues automatically. Speak the next sentence, pause again, and it pastes too — for as long as you like."),
+        .init(id: "stop", icon: "stop.circle.fill", title: "Close when done",
+              copy: "Press fn or Escape to stop. The last sentence is pasted and hands-free turns off.")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xl) {
+            OnboardingStepHeader(
+                eyebrow: "Page 4",
+                title: "Hands-free continuous dictation.",
+                copy: "For longer thoughts, let Vordi paste as you go. Speak, pause, and each part lands automatically — no key held down, no stopping to click."
+            )
+
+            OnboardingSurface {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(beats) { beat in
+                        beatRow(beat)
+                    }
+                }
+                .background(Theme.divider)
+            }
+
+            HStack(spacing: Theme.Space.sm) {
+                HotkeyBadge(label: "ctrl")
+                Text("+")
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textTertiary)
+                HotkeyBadge(label: "fn")
+                Text("starts it.")
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textTertiary)
+                HotkeyBadge(label: "fn")
+                Text("or")
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textTertiary)
+                HotkeyBadge(label: "esc")
+                Text("ends it.")
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textTertiary)
+            }
+        }
+    }
+
+    private func beatRow(_ beat: Beat) -> some View {
+        HStack(alignment: .top, spacing: Theme.Space.md) {
+            Image(systemName: beat.icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.RadiusExtra.sm, style: .continuous)
+                        .fill(Theme.surfaceElevated)
+                )
+            VStack(alignment: .leading, spacing: 3) {
+                Text(beat.title)
+                    .font(.vfCalloutSemibold)
+                    .foregroundColor(Theme.textPrimary)
+                Text(beat.copy)
+                    .font(.vfCaption)
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.Space.md)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Theme.surface)
     }
 }
@@ -1037,7 +1212,7 @@ private struct OnboardingTestStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xl) {
             OnboardingStepHeader(
-                eyebrow: "Page 4",
+                eyebrow: "Page 5",
                 title: "Test dictation and sensitivity.",
                 copy: "First check that your mic crosses the threshold, then hold fn and speak. Your newest onboarding transcript appears below."
             )
@@ -1189,5 +1364,213 @@ private struct OnboardingTestStep: View {
         }
         .buttonStyle(.plain)
         .vfClickableCursor()
+    }
+}
+
+// MARK: - Shortcuts recorder
+
+/// One row in the Shortcuts section: icon + label on the left, a tappable
+/// key-recorder field on the right, with an inline validation error when a
+/// capture is rejected.
+private struct HotkeyShortcutRow: View {
+    let action: HotkeyAction
+    let binding: HotkeyBinding
+    /// Attempt to commit a captured binding; returns an error string on reject.
+    let commit: (HotkeyBinding) -> String?
+
+    @State private var isRecording = false
+    @State private var errorText: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: action.icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(action.title).font(.headline)
+                Text(action.subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let errorText {
+                    Text(errorText)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            HotkeyRecorderField(
+                action: action,
+                binding: binding,
+                isRecording: $isRecording,
+                onCapture: { candidate in
+                    errorText = commit(candidate)
+                    isRecording = false
+                }
+            )
+        }
+        .padding(.vertical, 4)
+        .onChange(of: isRecording) { recording in
+            if recording { errorText = nil }
+        }
+    }
+}
+
+/// The tappable field. Shows the current combo as badges (or a "Press keys…"
+/// prompt while recording) and hosts the invisible AppKit capture view.
+private struct HotkeyRecorderField: View {
+    let action: HotkeyAction
+    let binding: HotkeyBinding
+    @Binding var isRecording: Bool
+    let onCapture: (HotkeyBinding) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if isRecording {
+                Text("Press keys…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            } else if binding.displayTokens.isEmpty {
+                Text("Unset")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(binding.displayTokens.enumerated()), id: \.offset) { _, token in
+                    HotkeyBadge(label: token)
+                }
+            }
+
+            Image(systemName: isRecording ? "record.circle" : "pencil")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(isRecording ? .red : .secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(minWidth: 130, alignment: .trailing)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Theme.surfaceElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isRecording ? Theme.accent : Theme.divider,
+                              lineWidth: isRecording ? 2 : 1)
+        )
+        .overlay(
+            HotkeyCaptureRepresentable(
+                modifierOnly: action.isModifierOnly,
+                isRecording: $isRecording,
+                onCapture: onCapture,
+                onCancel: { isRecording = false }
+            )
+            .allowsHitTesting(false)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { isRecording.toggle() }
+    }
+}
+
+/// Bridges an AppKit key-capture view into SwiftUI. Invisible — it exists only
+/// to grab first-responder keyboard events while recording. Shared by the
+/// dashboard Settings modal's Shortcuts pane too, so it's not `private`.
+struct HotkeyCaptureRepresentable: NSViewRepresentable {
+    let modifierOnly: Bool
+    @Binding var isRecording: Bool
+    let onCapture: (HotkeyBinding) -> Void
+    let onCancel: () -> Void
+
+    func makeNSView(context: Context) -> HotkeyCaptureNSView {
+        let view = HotkeyCaptureNSView()
+        view.modifierOnly = modifierOnly
+        view.onCapture = onCapture
+        view.onCancel = onCancel
+        return view
+    }
+
+    func updateNSView(_ nsView: HotkeyCaptureNSView, context: Context) {
+        nsView.modifierOnly = modifierOnly
+        nsView.onCapture = onCapture
+        nsView.onCancel = onCancel
+        if isRecording {
+            nsView.beginCapture()
+        } else {
+            nsView.endCapture()
+        }
+    }
+}
+
+/// Captures a hotkey combo. Modifier-only mode waits for a chord and commits it
+/// on release; key mode commits the first non-Esc key press plus held modifiers.
+final class HotkeyCaptureNSView: NSView {
+    var modifierOnly = false
+    var onCapture: ((HotkeyBinding) -> Void)?
+    var onCancel: (() -> Void)?
+
+    private var capturing = false
+    private var peakModifiers: HotkeyModifiers = []
+
+    override var acceptsFirstResponder: Bool { true }
+
+    func beginCapture() {
+        guard !capturing else { return }
+        capturing = true
+        peakModifiers = []
+        // Defer so the view is guaranteed to be in a window/hierarchy.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.capturing else { return }
+            self.window?.makeFirstResponder(self)
+        }
+    }
+
+    func endCapture() {
+        capturing = false
+        peakModifiers = []
+        if window?.firstResponder === self {
+            window?.makeFirstResponder(nil)
+        }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard capturing, modifierOnly else {
+            super.flagsChanged(with: event)
+            return
+        }
+        let mods = HotkeyModifiers(nsFlags: event.modifierFlags)
+        if mods.isEmpty {
+            // All modifiers released — commit the peak combo held so far.
+            if !peakModifiers.isEmpty {
+                let captured = peakModifiers
+                capturing = false
+                peakModifiers = []
+                onCapture?(HotkeyBinding(modifiers: captured, keyCode: nil))
+            }
+        } else {
+            peakModifiers.formUnion(mods)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard capturing else {
+            super.keyDown(with: event)
+            return
+        }
+        if modifierOnly {
+            // Esc cancels; other keys can't complete a modifier chord, so ignore.
+            if event.keyCode == 53 {
+                capturing = false
+                onCancel?()
+            }
+            return
+        }
+        // Exit action: this key (Esc included) plus any held modifiers becomes
+        // the binding. Strip `.function` — arrow/function keys set it spuriously.
+        capturing = false
+        var flags = event.modifierFlags
+        flags.remove(.function)
+        onCapture?(HotkeyBinding(modifiers: HotkeyModifiers(nsFlags: flags),
+                                 keyCode: Int(event.keyCode)))
     }
 }
