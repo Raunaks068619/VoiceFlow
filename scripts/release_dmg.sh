@@ -123,12 +123,37 @@ if [[ ! -d "${APP_PATH}" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Bundle vordi-mcp helper
+# -----------------------------------------------------------------------------
+# The Connect Agents feature resolves the helper at
+# Vordi.app/Contents/MacOS/vordi-mcp — without it the UI disables all
+# Connect buttons, so the helper must ship inside every distributed build.
+
+echo "==> Building vordi-mcp helper (Release)"
+( cd vordi-mcp && swift build -c release )
+MCP_BIN="vordi-mcp/.build/release/vordi-mcp"
+if [[ ! -f "${MCP_BIN}" ]]; then
+  echo "vordi-mcp binary not found: ${MCP_BIN}"
+  exit 1
+fi
+
+echo "==> Bundling vordi-mcp into ${APP_BUNDLE_NAME} (Contents/MacOS/)"
+cp "${MCP_BIN}" "${APP_PATH}/Contents/MacOS/vordi-mcp"
+
+# -----------------------------------------------------------------------------
 # Sign
 # -----------------------------------------------------------------------------
 
 ENTITLEMENTS="Resources/Vordi.entitlements"
 
+# Sign the nested helper explicitly first (--deep is unreliable for nested
+# Mach-O executables), then the app, so the outer signature stays valid.
 if [[ "${SIGNING_MODE}" == "notarized" || "${SIGNING_MODE}" == "signed_only" ]]; then
+  echo "==> Signing bundled vordi-mcp with Developer ID"
+  codesign --force --options runtime --timestamp \
+    --sign "${DEVELOPER_ID}" \
+    "${APP_PATH}/Contents/MacOS/vordi-mcp"
+
   echo "==> Signing with Developer ID: ${DEVELOPER_ID}"
   # Deep sign with hardened runtime + timestamp (required for notarization).
   codesign --force --deep --options runtime --timestamp \
@@ -140,7 +165,18 @@ if [[ "${SIGNING_MODE}" == "notarized" || "${SIGNING_MODE}" == "signed_only" ]];
   codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 else
   echo "==> Ad-hoc signing (local testing only)"
+  codesign --force --options runtime --sign - "${APP_PATH}/Contents/MacOS/vordi-mcp"
   codesign --force --deep --options runtime --entitlements "${ENTITLEMENTS}" --sign - "${APP_PATH}"
+fi
+
+echo "==> Verifying bundled vordi-mcp responds over stdio"
+MCP_CHECK=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  | "${APP_PATH}/Contents/MacOS/vordi-mcp" 2>/dev/null | head -1)
+if echo "${MCP_CHECK}" | grep -q '"serverInfo"'; then
+  echo "    ✓ bundled vordi-mcp is live"
+else
+  echo "ERROR: bundled vordi-mcp did not respond — check signing"
+  exit 1
 fi
 
 # -----------------------------------------------------------------------------
