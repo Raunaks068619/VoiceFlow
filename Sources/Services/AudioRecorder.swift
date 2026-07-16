@@ -4,6 +4,14 @@ import AVFoundation
 class AudioRecorder: NSObject {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
+    /// Mirrors whether this recorder installed a tap on `inputNode`.
+    /// AVFoundation raises an uncaught Objective-C exception when a second tap
+    /// is installed on the same bus, so tap ownership must be explicit rather
+    /// than inferred from `isRecording`.
+    private var inputTapInstalled = false
+    /// Cancels the delayed 350 ms teardown when a capture is aborted or its
+    /// lifecycle is superseded (for example Fn transitioning to Fn+Control).
+    private var pendingStopWorkItem: DispatchWorkItem?
     private var rawAudioBuffer: [AVAudioPCMBuffer] = []
     private var isRecording = false
     private var recordingCallback: ((Data?) -> Void)?
@@ -120,10 +128,32 @@ class AudioRecorder: NSObject {
     private func setupAudioEngine() {
         audioEngine = AVAudioEngine()
         inputNode = audioEngine?.inputNode
+        inputTapInstalled = false
+    }
+
+    private func removeInputTapIfNeeded() {
+        guard inputTapInstalled else { return }
+        inputNode?.removeTap(onBus: 0)
+        inputTapInstalled = false
+    }
+
+    /// A persistent AVAudioEngine can retain a stale input format after a mic
+    /// switch, Bluetooth profile change, or wake from sleep. Rebuilding it for
+    /// each new capture gives installTap a fresh node and current hardware
+    /// format, while also guaranteeing no prior tap can survive.
+    private func resetAudioEngineForNewCapture() {
+        removeInputTapIfNeeded()
+        if audioEngine?.isRunning == true { audioEngine?.stop() }
+        setupAudioEngine()
     }
 
     func startRecording(continuousHandsFree: Bool = false) -> Bool {
-        guard let audioEngine = audioEngine, !isRecording else { return false }
+        guard !isRecording else { return false }
+
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
+        resetAudioEngineForNewCapture()
+        guard let audioEngine, let inputNode else { return false }
 
         rawAudioBuffer.removeAll()
         firstVoicedIndex = nil
@@ -140,14 +170,21 @@ class AudioRecorder: NSObject {
         consecutiveSilentBuffers = 0
         silenceFiredForCurrentUtterance = false
 
-        let format = inputNode?.outputFormat(forBus: 0)
+        let format = inputNode.outputFormat(forBus: 0)
+        // installTap does not report an invalid hardware format as a Swift
+        // error. It raises NSException and terminates the process. This format
+        // can briefly be 0 Hz / 0 channels during device transitions, so fail
+        // this recording attempt cleanly and let the next press retry.
+        guard format.sampleRate.isFinite,
+              format.sampleRate > 0,
+              format.channelCount > 0 else {
+            DebugLog.log("AudioRecorder: invalid input format; start skipped sr=\(format.sampleRate) channels=\(format.channelCount)")
+            return false
+        }
         // Derive the pause threshold in buffers from the live sample rate
         // (1024 frames per tap buffer). At 48kHz this is ~94 buffers ≈ 2s.
-        let sampleRate = format?.sampleRate ?? 48000
+        let sampleRate = format.sampleRate
         silenceBufferTarget = max(1, Int(handsFreeSilenceThreshold * sampleRate / 1024.0))
-
-        // Remove any leftover tap from a previous failed start before installing a new one.
-        inputNode?.removeTap(onBus: 0)
 
         // Capture ALL audio into rawAudioBuffer and remember which buffers had
         // voice activity. Previously we ran a real-time noise gate that dropped
@@ -165,7 +202,7 @@ class AudioRecorder: NSObject {
         // *leading and trailing* silence using the voiced-index markers, with
         // generous padding on both sides. This preserves mid-recording pauses
         // (which are semantically meaningful) while still shaving bandwidth.
-        inputNode?.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
             guard let copiedBuffer = self.copyBuffer(buffer) else { return }
             let rms = self.calculateRMS(buffer: copiedBuffer)
@@ -225,6 +262,7 @@ class AudioRecorder: NSObject {
                 DispatchQueue.main.async { [weak self] in self?.onUtteranceSilence?() }
             }
         }
+        inputTapInstalled = true
 
         do {
             try audioEngine.start()
@@ -233,7 +271,7 @@ class AudioRecorder: NSObject {
             DebugLog.log("AudioRecorder: engine STARTED continuous=\(continuousHandsFree) silenceTarget=\(silenceBufferTarget) noiseGate=\(noiseGateThreshold) sr=\(sampleRate)")
             return true
         } catch {
-            inputNode?.removeTap(onBus: 0)
+            removeInputTapIfNeeded()
             print("Failed to start audio engine: \(error)")
             DebugLog.log("AudioRecorder: engine START FAILED continuous=\(continuousHandsFree) error=\(error)")
             return false
@@ -251,10 +289,12 @@ class AudioRecorder: NSObject {
         // has actual buffers to pad with — without it, words dictated up
         // to the moment of release get clipped. See the constant comment
         // for the full rationale.
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(stopGraceMilliseconds)) { [weak self] in
+        pendingStopWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
+            self.pendingStopWorkItem = nil
 
-            self.inputNode?.removeTap(onBus: 0)
+            self.removeInputTapIfNeeded()
             self.audioEngine?.stop()
             self.isRecording = false
             self.continuousHandsFree = false
@@ -273,6 +313,11 @@ class AudioRecorder: NSObject {
             )
             completion(audioData)
         }
+        pendingStopWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(stopGraceMilliseconds),
+            execute: work
+        )
     }
 
     /// Trim leading/trailing silence (with padding) from a captured buffer run
@@ -334,7 +379,9 @@ class AudioRecorder: NSObject {
     /// real trailing silence, so the trailing-padding has plenty to work with.
     func stopContinuous() {
         guard continuousHandsFree else { return }
-        inputNode?.removeTap(onBus: 0)
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
+        removeInputTapIfNeeded()
         audioEngine?.stop()
         isRecording = false
         continuousHandsFree = false
@@ -349,7 +396,9 @@ class AudioRecorder: NSObject {
     /// engine can be restarted cleanly in continuous mode. Safe to call when not
     /// recording (no-op). Main thread.
     func abort() {
-        inputNode?.removeTap(onBus: 0)
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
+        removeInputTapIfNeeded()
         audioEngine?.stop()
         isRecording = false
         continuousHandsFree = false

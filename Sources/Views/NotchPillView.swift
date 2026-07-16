@@ -76,6 +76,13 @@ struct NotchPillView: View {
         min(canvasWidth, pillWidth + backgroundSideExpansion * 2)
     }
 
+    /// The canvas cap includes the curved background gutters. Reserving them
+    /// here prevents a long status label from consuming the full canvas and
+    /// placing row/panel content underneath the shape's clipped side walls.
+    private var maximumPillWidth: CGFloat {
+        max(0, canvasWidth - backgroundSideExpansion * 2)
+    }
+
     private var surfaceHeight: CGFloat {
         rowHeight + inlineTranscriptHeight + expandedPanelHeightValue
     }
@@ -95,6 +102,13 @@ struct NotchPillView: View {
         default:
             return 0
         }
+    }
+
+    /// Width of the vertical body inside the custom notch shape. The notice
+    /// remains inside the actual curve even when its radius is slightly wider
+    /// than the standard background side expansion.
+    private var panelNoticeSafeWidth: CGFloat {
+        max(0, min(pillWidth, backgroundWidth - topCornerRadius * 2))
     }
 
     var body: some View {
@@ -311,12 +325,10 @@ struct NotchPillView: View {
         )
     }
 
-    // Mirrors `errorPanelContent` exactly (paddings, spacings, text treatment)
-    // so the permissions notice resolves to the same layout as every other
-    // error state (e.g. "no transcription"). Only the content differs: the
-    // Setup badge, Fix/close actions, and the Missing-permissions box.
+    // Uses the same constrained notice container as `errorPanelContent` so
+    // both states obey the exact inner width of the expanded notch surface.
     private var permissionsPanelContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        panelNoticeContainer {
             HStack(spacing: 7) {
                 HStack(spacing: 5) {
                     Image(systemName: "exclamationmark.shield.fill")
@@ -403,9 +415,6 @@ struct NotchPillView: View {
                     .stroke(NotchPillPalette.mark.opacity(0.055), lineWidth: 1)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 9)
-        .padding(.bottom, 10)
     }
 
     private var isPanelHoverOpen: Bool {
@@ -567,7 +576,7 @@ struct NotchPillView: View {
     private func errorPanelContent(title: String, desc: String, tip: String) -> some View {
         let presentation = panelNoticePresentation(title: title, desc: desc, tip: tip)
 
-        return VStack(alignment: .leading, spacing: 0) {
+        return panelNoticeContainer {
             HStack(spacing: 7) {
                 HStack(spacing: 5) {
                     Image(systemName: presentation.icon)
@@ -669,9 +678,22 @@ struct NotchPillView: View {
                     .stroke(NotchPillPalette.mark.opacity(0.055), lineWidth: 1)
             }
         }
+    }
+
+    /// Gives every notice state one explicit content-width contract. The fixed
+    /// outer frame stays inside the shape body; padding then reserves the same
+    /// 12pt content gutter for both permission and error notices.
+    private func panelNoticeContainer<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.top, 9)
         .padding(.bottom, 10)
+        .frame(width: panelNoticeSafeWidth, alignment: .leading)
     }
 
     private struct PanelNoticePresentation {
@@ -1172,7 +1194,7 @@ struct NotchPillView: View {
         if model.hasAllPermissions {
             switch model.state {
             case .idle, .proximity:
-                return defaultPillWidth
+                return min(defaultPillWidth, maximumPillWidth)
             default:
                 break
             }
@@ -1181,16 +1203,19 @@ struct NotchPillView: View {
         switch model.state {
         case .panelHover, .panelTranscript, .panelError:
             return min(
-                canvasWidth,
+                maximumPillWidth,
                 contentDerivedPillWidth(
                     label: statusLabel,
                     rightContentWidth: rightContentWidth
                 ) + NotchPillScreenGeometry.openPanelWidthExpansion
             )
         default:
-            return contentDerivedPillWidth(
-                label: statusLabel,
-                rightContentWidth: rightContentWidth
+            return min(
+                maximumPillWidth,
+                contentDerivedPillWidth(
+                    label: statusLabel,
+                    rightContentWidth: rightContentWidth
+                )
             )
         }
     }

@@ -394,11 +394,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
     let noteStore = VoiceNoteStore.shared
     lazy var runRecorder = RunRecorder(store: runStore)
 
-    /// Captured at hotkey-press (startRecording), consumed at result-time.
-    /// The snapshot must be taken EAGERLY because by the time the LLM
-    /// returns, the user may have alt-tabbed and the AX selection is gone.
+    /// Captured just after the audio engine starts, consumed at result-time.
+    /// Context capture is intentionally deferred off the press-critical path:
+    /// screenshot/JPEG work can take hundreds of milliseconds on large windows.
+    /// A capture generation prevents a late snapshot from an older recording
+    /// from overwriting the current one.
     private var pendingContext: ContextSnapshot?
     private var pendingContextSummaryTask: Task<Void, Never>?
+    private var pendingContextCaptureID: UUID?
 
     /// Router instance — created lazily because it depends on whisperService.
     private lazy var transformerRouter: TransformerRouter? = {
@@ -1408,27 +1411,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
-            // EAGERLY capture context (active app + selection). Done at
-            // press-time, NOT at result-time, because by the time STT +
-            // LLM returns 1–4s later, the user may have alt-tabbed away.
-            // ContextProvider is fail-soft — returns an empty snapshot if
-            // capture is disabled or AX is unavailable.
-            self.pendingContextSummaryTask?.cancel()
-            let capturedContext = ContextProvider.shared.snapshot(hotkey: .primary)
-            self.pendingContext = capturedContext
-            self.pendingContextSummaryTask = Task { [weak self, capturedContext] in
-                guard let self, let whisper = self.whisperService else { return }
-                let enrichedContext = await whisper.prepareContextSummaryAsync(capturedContext)
-                guard !Task.isCancelled, let enrichedContext else { return }
-                await MainActor.run { [weak self] in
-                    guard
-                        let self,
-                        self.pendingContext?.capturedAt == capturedContext.capturedAt
-                    else { return }
-                    self.pendingContext = enrichedContext
-                }
-            }
-
             // -----------------------------------------------------------------
             // Pre-flight permission check.
             //
@@ -1532,6 +1514,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
             let didStart = self.audioRecorder?.startRecording(continuousHandsFree: continuousHandsFree) ?? false
             if didStart {
                 self.permissionService.markMicrophoneOperational()
+                self.scheduleContextCapture()
                 // On-device live preview: if enabled + authorized for this
                 // language, stream local partials into the notch. Works in both
                 // push-to-talk and hands-free, on any provider — the pasted text
@@ -1556,6 +1539,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
                 self.isRecording = false
                 self.hideRecordingFeedback()
                 NSSound.beep()
+            }
+        }
+    }
+
+    /// Capture active-app context only after recording feedback and the audio
+    /// tap are live. `ContextProvider.snapshot()` may synchronously capture and
+    /// JPEG-encode a large window; keeping it ahead of `audioEngine.start()`
+    /// caused the reported 0.5–1s dead period after pressing Fn.
+    ///
+    /// The short delay gives AppKit one render pass to present the recording
+    /// state. The feedback surface is non-activating, so the user's source app
+    /// and focused selection remain the snapshot target.
+    private func scheduleContextCapture() {
+        pendingContextSummaryTask?.cancel()
+        pendingContextSummaryTask = nil
+        pendingContext = nil
+
+        let captureID = UUID()
+        pendingContextCaptureID = captureID
+        let scheduledAt = CFAbsoluteTimeGetCurrent()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.pendingContextCaptureID == captureID else { return }
+
+            let capturedContext = ContextProvider.shared.snapshot(hotkey: .primary)
+            guard self.pendingContextCaptureID == captureID else { return }
+            self.pendingContext = capturedContext
+
+            let latencyMs = Int((CFAbsoluteTimeGetCurrent() - scheduledAt) * 1_000)
+            DebugLog.log("ContextProvider: deferred snapshot READY latencyMs=\(latencyMs)")
+
+            self.pendingContextSummaryTask = Task { [weak self, capturedContext] in
+                guard let self, let whisper = self.whisperService else { return }
+                let enrichedContext = await whisper.prepareContextSummaryAsync(capturedContext)
+                guard !Task.isCancelled, let enrichedContext else { return }
+                await MainActor.run { [weak self] in
+                    guard
+                        let self,
+                        self.pendingContextCaptureID == captureID,
+                        self.pendingContext?.capturedAt == capturedContext.capturedAt
+                    else { return }
+                    self.pendingContext = enrichedContext
+                }
             }
         }
     }

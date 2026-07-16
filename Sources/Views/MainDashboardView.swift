@@ -572,7 +572,6 @@ struct MainDashboardView: View {
     private enum SettingsPane: String, CaseIterable {
         case general
         case shortcuts
-        case dictation
         case aiModels
         case agents
         case permissions
@@ -589,7 +588,6 @@ struct MainDashboardView: View {
             switch self {
             case .general: return "General"
             case .shortcuts: return "Shortcuts"
-            case .dictation: return "Dictation"
             case .aiModels: return "AI Models"
             case .agents: return "Connect Agents"
             case .permissions: return "Permissions"
@@ -603,8 +601,7 @@ struct MainDashboardView: View {
             switch self {
             case .general: return "Language, output, and feedback."
             case .shortcuts: return "Push-to-talk, hands-free, and exit keys."
-            case .dictation: return "Provider, keys, and streaming."
-            case .aiModels: return "Post-processing and memory AI."
+            case .aiModels: return "Transcription, API keys, streaming, and model routing."
             case .agents: return "Let Claude, Cursor & Codex read your dictations."
             case .permissions: return "macOS access required for capture and typing."
             case .dataPrivacy: return "Run history and custom vocabulary."
@@ -617,7 +614,6 @@ struct MainDashboardView: View {
             switch self {
             case .general: return "slider.horizontal.3"
             case .shortcuts: return "keyboard"
-            case .dictation: return "waveform"
             case .aiModels: return "brain.head.profile"
             case .agents: return "link.badge.plus"
             case .permissions: return "lock.shield"
@@ -629,14 +625,14 @@ struct MainDashboardView: View {
 
         var group: Group {
             switch self {
-            case .general, .shortcuts, .dictation, .aiModels, .agents:
+            case .general, .shortcuts, .aiModels, .agents:
                 return .settings
             case .permissions, .dataPrivacy, .devMode, .setup:
                 return .system
             }
         }
 
-        static let settingsGroup: [SettingsPane] = [.general, .shortcuts, .dictation, .aiModels, .agents]
+        static let settingsGroup: [SettingsPane] = [.general, .shortcuts, .aiModels, .agents]
         static let systemGroup: [SettingsPane] = [.permissions, .dataPrivacy, .devMode, .setup]
     }
 
@@ -2632,8 +2628,6 @@ struct MainDashboardView: View {
             generalSettingsPane
         case .shortcuts:
             shortcutsSettingsPane
-        case .dictation:
-            dictationSettingsPane
         case .aiModels:
             aiModelsSettingsPane
         case .agents:
@@ -2783,9 +2777,9 @@ struct MainDashboardView: View {
         .onChange(of: openAIKey) { _ in reconcileOutputModeForTier() }
     }
 
-    private var dictationSettingsPane: some View {
+    private var aiModelsSettingsPane: some View {
         VStack(spacing: 0) {
-            VFFormSection(header: "Provider") {
+            VFFormSection(header: "Transcription") {
                 VFFormRow(
                     label: "Transcription provider",
                     description: "The service that turns speech into text."
@@ -2802,9 +2796,10 @@ struct MainDashboardView: View {
                         UserDefaults.standard.set(newValue, forKey: "transcription_provider")
                     }
                 }
+            }
 
+            VFFormSection(header: "API Keys") {
                 if provider == TranscriptionProvider.groq.rawValue {
-                    VFDivider(inset: Theme.Space.xl)
                     VFFormRow(
                         label: "Free tier",
                         description: "Multilingual dictation with the embedded beta key."
@@ -2822,7 +2817,6 @@ struct MainDashboardView: View {
                         }
                     )
                 } else {
-                    VFDivider(inset: Theme.Space.xl)
                     settingsKeyRow(
                         label: "OpenAI API key",
                         description: "Required for OpenAI transcription.",
@@ -2878,11 +2872,7 @@ struct MainDashboardView: View {
                     ))
                 }
             }
-        }
-    }
 
-    private var aiModelsSettingsPane: some View {
-        VStack(spacing: 0) {
             VFFormSection(header: "Post-processing") {
                 VFFormRow(
                     label: "Polish model",
