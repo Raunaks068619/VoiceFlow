@@ -90,12 +90,9 @@ enum NotchPillScreenGeometry {
     static let expandedPanelHeight: CGFloat = 176
     static let listeningPanelHeight: CGFloat = 62
     static let errorPanelHeight: CGFloat = 136
-    // The permissions notice mirrors the error-card layout but its copy is
-    // shorter (1-line desc + 1-line missing list, vs the errors' 2+2 lines),
-    // so it needs a snugger height. Reusing errorPanelHeight (136) left ~20pt
-    // of dead space below the content, making the card look oversized next to
-    // the real error states. Measured content ≈ 116pt; +6 breathing room.
-    static let permissionsPanelHeight: CGFloat = 122
+    // The missing-permissions list is capped at two lines, just like error
+    // notice copy, so both states need the same worst-case vertical allowance.
+    static let permissionsPanelHeight: CGFloat = errorPanelHeight
     static let morphDuration: TimeInterval = 0.50
 
     private static let lanePadding: CGFloat = 10
@@ -171,13 +168,15 @@ enum NotchPillScreenGeometry {
             isExternalDock: isExternalDock,
             defaultPillWidth: defaultPillWidth
         )
-        let pillWidth = pillWidth(
+        let requestedPillWidth = pillWidth(
             state: state,
             centerGapWidth: centerGapWidth,
             defaultPillWidth: defaultPillWidth,
             hasAllPermissions: hasAllPermissions
         )
-        let width = min(maxSurfaceWidth, pillWidth + backgroundSideExpansion(state: state, isExternalDock: isExternalDock) * 2)
+        let sideExpansion = backgroundSideExpansion(state: state, isExternalDock: isExternalDock)
+        let pillWidth = min(requestedPillWidth, max(0, maxSurfaceWidth - sideExpansion * 2))
+        let width = min(maxSurfaceWidth, pillWidth + sideExpansion * 2)
         let height = rowHeight
             + inlineTranscriptHeight(state: state, liveTranscript: liveTranscript)
             + expandedPanelHeightValue(for: state, panelMode: panelMode, hasAllPermissions: hasAllPermissions)

@@ -491,6 +491,7 @@ class HotKeyListener {
         DispatchQueue.main.async { [weak self] in
             if active {
                 print("Push-to-talk pressed")
+                DebugLog.log("HotKey: push-to-talk DOWN")
                 self?.onKeyDown?()
             } else {
                 print("Push-to-talk released")

@@ -74,8 +74,17 @@ pkill -f "$APP_NAME.app" 2>/dev/null || true
 sleep 1
 
 echo "Installing to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR/$APP_NAME.app"
-cp -R "$BUILT_APP" "$INSTALL_DIR/$APP_NAME.app"
+INSTALLED_APP="$INSTALL_DIR/$APP_NAME.app"
+if [ -d "$INSTALLED_APP" ] && [ ! -L "$INSTALLED_APP" ] && [ -w "$INSTALLED_APP" ]; then
+  # Some managed Macs allow updating an owned bundle but not unlinking its
+  # entry from the root-owned /Applications directory. Replace the bundle's
+  # contents in place so installation remains deterministic in that setup.
+  rm -rf "$INSTALLED_APP/Contents"
+  ditto "$BUILT_APP" "$INSTALLED_APP"
+else
+  rm -rf "$INSTALLED_APP"
+  ditto "$BUILT_APP" "$INSTALLED_APP"
+fi
 
 # Sign the bundled helper explicitly first (--deep is deprecated/unreliable for
 # nested Mach-O helpers), then the app, so the outer signature stays valid.
