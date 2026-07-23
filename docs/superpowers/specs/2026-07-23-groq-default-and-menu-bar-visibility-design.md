@@ -20,10 +20,10 @@ clearly visible in both the macOS menu bar and the opened menu.
 
 ## Menu-bar rendering
 
-- The compact menu-bar mark uses the transparent Vordi waveform as an AppKit
-  template image.
-- macOS owns the template tint so the mark remains visible against light,
-  dark, wallpaper-tinted, active, and inactive menu-bar backgrounds.
+- The compact menu-bar mark uses the actual transparent Vordi artwork,
+  including its outside-tall waveform and two signature sparkles.
+- The mark is resampled into a native menu-bar canvas and receives a restrained
+  contrast shadow so its white artwork remains visible over light wallpapers.
 - The opened dark menu displays the transparent white Vordi mark explicitly.
 - The transparent logo asset is included in the Xcode application resources;
   missing-resource fallbacks are not the normal rendering path.
