@@ -840,13 +840,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
     }
 
     private func configureDefaultSettings() {
-        // Provider — Groq beats OpenAI as the free-tier default because we
-        // ship an embedded Groq beta key. Without this seed the UI would
-        // read OpenAI as the default (its fallback string in 3 places),
-        // contradict TranscriptionProvider.current (which now defaults to
-        // Groq), and surface "API key not present" on the first dictation.
-        // Seeding here makes ALL three reader-fallbacks moot.
-        if UserDefaults.standard.string(forKey: "transcription_provider") == nil {
+        // Restore the free-first Groq experience for installs that were
+        // migrated to OpenAI by build 24. This one-time correction also seeds
+        // Groq for new users; they can explicitly opt into OpenAI afterwards.
+        let restoreGroqMigrationKey = "did_restore_groq_transcription_default_v1"
+        if !UserDefaults.standard.bool(forKey: restoreGroqMigrationKey) {
+            UserDefaults.standard.set(TranscriptionProvider.groq.rawValue, forKey: "transcription_provider")
+            UserDefaults.standard.set(true, forKey: restoreGroqMigrationKey)
+        } else if UserDefaults.standard.string(forKey: "transcription_provider") == nil {
             UserDefaults.standard.set(TranscriptionProvider.groq.rawValue, forKey: "transcription_provider")
         }
         if UserDefaults.standard.string(forKey: "output_mode") == nil {
@@ -867,7 +868,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
         }
         UserDefaults.standard.set(true, forKey: polishDefaultMigrationKey)
         if let storedPolishBackend = UserDefaults.standard.string(forKey: PolishBackend.userDefaultsKey),
-           PolishBackend.legacyGroqModelIds.contains(storedPolishBackend) {
+           PolishBackend.legacyGroqModelIds.contains(storedPolishBackend)
+            || storedPolishBackend.hasPrefix("openai::") {
             print("Vordi: migrating polish_backend_id '\(storedPolishBackend)' → '\(PolishBackend.defaultIdGroq)'")
             UserDefaults.standard.set(PolishBackend.defaultIdGroq, forKey: PolishBackend.userDefaultsKey)
         }
@@ -1408,7 +1410,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
     }
     
     func startRecording(continuousHandsFree: Bool = false) {
-        DispatchQueue.main.async { [weak self] in
+        let start = { [weak self] in
             guard let self else { return }
 
             // -----------------------------------------------------------------
@@ -1540,6 +1542,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
                 self.hideRecordingFeedback()
                 NSSound.beep()
             }
+        }
+        if Thread.isMainThread {
+            start()
+        } else {
+            DispatchQueue.main.async(execute: start)
         }
     }
 
@@ -1713,7 +1720,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
                             // potentially routes — the snapshot is needed
                             // both for routing (trigger detection) AND for
                             // the run log row (per-app insights).
-                            let context = metadata.context ?? self.pendingContext ?? .empty()
+                            // Prefer the asynchronously enriched snapshot. The
+                            // metadata copy may predate screenshot summarization.
+                            let context = self.pendingContext ?? metadata.context ?? .empty()
                             session.attachContext(context)
                             self.pendingContext = nil
                             self.pendingContextSummaryTask?.cancel()
@@ -2241,6 +2250,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
         // non-Latin script output that breaks the bilingual normalizer.
         // The batch path with whisper-large-v3 auto-detect is more reliable.
         let outputModeRaw = UserDefaults.standard.string(forKey: "output_mode") ?? ""
+        let outputStyle = TranscriptOutputStyle(rawValue: outputModeRaw) ?? .cleanHinglish
         if outputModeRaw == TranscriptOutputStyle.cleanHinglish.rawValue {
             print("Realtime stream disabled for Romanized style — using batch path for multilingual reliability")
             return
@@ -2268,7 +2278,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Observable
         let config: RealtimeTranscriptionService.Configuration = .openAI(
             apiKey: apiKey,
             language: normalizedLanguage,
-            prompt: WhisperService.sttPromptForRealtime
+            prompt: WhisperService.sttPrompt(for: outputStyle)
         )
         let stream = RealtimeTranscriptionService(config: config)
         realtimeStream = stream

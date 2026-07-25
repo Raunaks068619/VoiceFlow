@@ -276,20 +276,6 @@ class HotKeyListener {
     /// fully released.
     private var suppressPushUntilRelease = false
 
-    /// Chord-disambiguation debounce. When the push-to-talk combo is a strict
-    /// subset of the hands-free combo (default: Fn ⊂ Fn+Control), a bare
-    /// push-to-talk press is ambiguous — it may be the leading edge of the
-    /// hands-free chord, i.e. the user pressing Fn a few ms before Control.
-    /// Starting push-to-talk immediately in that window would (a) fire a stray
-    /// recording and (b) leave the owner's `isRecording` set, which makes the
-    /// hands-free toggle bail out of starting the *continuous* engine — so
-    /// hands-free would flip its UI on but never actually harvest utterances.
-    /// We hold the push-to-talk start for one short window; if the chord
-    /// completes first, the next `flagsChanged` cancels it. Only ever touched on
-    /// the main runloop (the tap is installed there — see `start()`).
-    private let chordDisambiguationWindow: TimeInterval = 0.06
-    private var pendingPushToTalkStart: DispatchWorkItem?
-
     // Config-driven combos. Default to the historical Fn / Fn+Ctrl / Esc so the
     // listener still behaves correctly if start() runs before configure().
     private var pushToTalkFlags: CGEventFlags = [.maskSecondaryFn]
@@ -365,7 +351,6 @@ class HotKeyListener {
         isTriggerActive = false
         isHandsFreeChordActive = false
         suppressPushUntilRelease = false
-        cancelPendingPushToTalkStart()
     }
 
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -398,10 +383,6 @@ class HotKeyListener {
     }
 
     private func handleFlagsChanged(current: CGEventFlags) {
-        // The modifier set just changed, so any push-to-talk start we were
-        // holding back for chord disambiguation is now stale — re-decide below.
-        cancelPendingPushToTalkStart()
-
         // Hands-free chord takes priority. `.contains` on an OptionSet is a
         // subset test, so this fires when every required modifier is held.
         let hfHeld = !handsFreeFlags.isEmpty && current.contains(handsFreeFlags)
@@ -444,51 +425,16 @@ class HotKeyListener {
         // Push-to-talk is held. If it's already recording, nothing to do.
         if isTriggerActive { return }
 
-        // Rising edge. If push-to-talk is a strict subset of the hands-free
-        // chord, this may be the first key of that chord (Fn before Control),
-        // so defer the start by one short window. Control arriving cancels it
-        // via `cancelPendingPushToTalkStart()` at the top of this method; if the
-        // window elapses with only push-to-talk held, we start recording. When
-        // the combos are disjoint there's nothing to disambiguate, so start now.
-        if pushToTalkIsSubsetOfHandsFree {
-            schedulePendingPushToTalkStart()
-        } else {
-            setTriggerActive(true)
-        }
-    }
-
-    /// True when holding push-to-talk could be the leading edge of the hands-free
-    /// chord (push-to-talk ⊂ hands-free). When the combos are equal or disjoint
-    /// there is nothing to disambiguate and push-to-talk starts immediately.
-    private var pushToTalkIsSubsetOfHandsFree: Bool {
-        !pushToTalkFlags.isEmpty
-            && !handsFreeFlags.isEmpty
-            && pushToTalkFlags != handsFreeFlags
-            && handsFreeFlags.contains(pushToTalkFlags)
-    }
-
-    private func schedulePendingPushToTalkStart() {
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            self.pendingPushToTalkStart = nil
-            // Only start if the chord never completed and push-to-talk wasn't
-            // suppressed while we waited.
-            guard !self.isHandsFreeChordActive, !self.suppressPushUntilRelease else { return }
-            self.setTriggerActive(true)
-        }
-        pendingPushToTalkStart = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + chordDisambiguationWindow, execute: work)
-    }
-
-    private func cancelPendingPushToTalkStart() {
-        pendingPushToTalkStart?.cancel()
-        pendingPushToTalkStart = nil
+        // Start immediately. If Control arrives next and completes the
+        // hands-free chord, the existing hands-free transition owns and
+        // restarts the capture in continuous mode.
+        setTriggerActive(true)
     }
 
     private func setTriggerActive(_ active: Bool) {
         guard active != isTriggerActive else { return }
         isTriggerActive = active
-        DispatchQueue.main.async { [weak self] in
+        let notify = { [weak self] in
             if active {
                 print("Push-to-talk pressed")
                 DebugLog.log("HotKey: push-to-talk DOWN")
@@ -497,6 +443,11 @@ class HotKeyListener {
                 print("Push-to-talk released")
                 self?.onKeyUp?()
             }
+        }
+        if Thread.isMainThread {
+            notify()
+        } else {
+            DispatchQueue.main.async(execute: notify)
         }
     }
 }

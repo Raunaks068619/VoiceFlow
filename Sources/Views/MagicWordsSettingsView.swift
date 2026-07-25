@@ -2,6 +2,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+/// Fixed colors for the always-dark Magic Words hero. Page-level adaptive
+/// tokens can become light in dark mode, creating white-on-white example chips.
+private enum MagicWordsHeroPalette {
+    static let primaryText = Theme.textOnDark
+    static let secondaryText = Theme.textOnDark.opacity(0.82)
+    static let triggerFill = Theme.textOnDark.opacity(0.96)
+    static let triggerText = Color(red: 0.102, green: 0.090, blue: 0.078)
+    static let expansionFill = Color.black.opacity(0.34)
+    static let expansionBorder = Theme.textOnDark.opacity(0.18)
+}
+
 private enum MagicWordsTab: String {
     case all
     case commands
@@ -197,7 +208,7 @@ struct MagicWordsSettingsView: View {
                 snippetHeroTitle
                 Text("Save the phrases you repeat. When you say the short version, \(AppBrand.name) expands it before typing.")
                     .font(.vfCallout)
-                    .foregroundColor(Theme.textOnDarkSecondary)
+                    .foregroundColor(MagicWordsHeroPalette.secondaryText)
                     .frame(maxWidth: 560, alignment: .leading)
             }
 
@@ -229,7 +240,7 @@ struct MagicWordsSettingsView: View {
     private var commandExecutionInline: some View {
         VStack(alignment: .leading, spacing: Theme.Space.md) {
             Rectangle()
-                .fill(Theme.textOnDark.opacity(0.16))
+                .fill(MagicWordsHeroPalette.primaryText.opacity(0.18))
                 .frame(height: 1)
                 .padding(.top, Theme.Space.xs)
 
@@ -238,7 +249,7 @@ struct MagicWordsSettingsView: View {
             if installedApps.apps.isEmpty {
                 Text("No apps found in /Applications.")
                     .font(.vfCallout)
-                    .foregroundColor(Theme.textOnDarkSecondary)
+                    .foregroundColor(MagicWordsHeroPalette.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Theme.Space.sm)
             } else {
@@ -262,7 +273,7 @@ struct MagicWordsSettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             Text(app.name)
                 .font(.vfCaption)
-                .foregroundColor(Theme.textOnDarkSecondary)
+                .foregroundColor(MagicWordsHeroPalette.secondaryText)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: 58)
@@ -277,17 +288,17 @@ struct MagicWordsSettingsView: View {
             .font(.custom("Georgia", size: 26).italic())
          + Text(" into full text.")
             .font(.system(size: 26, weight: .semibold, design: .serif)))
-            .foregroundColor(Theme.textOnDark)
+            .foregroundColor(MagicWordsHeroPalette.primaryText)
     }
 
     private var executeCommandQuote: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
             Image(systemName: "quote.opening")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(Theme.textOnDark.opacity(0.70))
+                .foregroundColor(MagicWordsHeroPalette.secondaryText)
             Text("“open Claude and draft a release checklist”")
                 .font(.vfCalloutSemibold)
-                .foregroundColor(Theme.textOnDark)
+                .foregroundColor(MagicWordsHeroPalette.primaryText)
         }
         .padding(.top, Theme.Space.xs)
     }
@@ -296,20 +307,20 @@ struct MagicWordsSettingsView: View {
         HStack(spacing: Theme.Space.sm) {
             Text(trigger)
                 .font(.vfCalloutSemibold)
-                .foregroundColor(Theme.textPrimary)
+                .foregroundColor(MagicWordsHeroPalette.triggerText)
                 .lineLimit(1)
                 .padding(.horizontal, Theme.Space.md)
                 .frame(height: 32)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.RadiusExtra.input, style: .continuous)
-                        .fill(Theme.textOnDark.opacity(0.92))
+                        .fill(MagicWordsHeroPalette.triggerFill)
                 )
             Image(systemName: "arrow.right")
                 .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Theme.textOnDark.opacity(0.72))
+                .foregroundColor(MagicWordsHeroPalette.secondaryText)
             Text("“\(expansion)”")
                 .font(.vfCalloutMedium)
-                .foregroundColor(Theme.textPrimary.opacity(0.86))
+                .foregroundColor(MagicWordsHeroPalette.primaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.9)
                 .truncationMode(.tail)
@@ -318,7 +329,11 @@ struct MagicWordsSettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.RadiusExtra.input, style: .continuous)
-                        .fill(Theme.textOnDark.opacity(0.72))
+                        .fill(MagicWordsHeroPalette.expansionFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.RadiusExtra.input, style: .continuous)
+                        .strokeBorder(MagicWordsHeroPalette.expansionBorder, lineWidth: 1)
                 )
         }
         .frame(maxWidth: .infinity, alignment: .leading)

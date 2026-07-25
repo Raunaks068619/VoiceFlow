@@ -11,7 +11,10 @@ struct MenuBarView: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                VFBrandLogo(size: 26, variant: .automatic, cornerRadius: 6)
+                // MenuBarExtra's material can be dark even while the app's
+                // colorScheme reports light. Pin this surface to the white
+                // transparent mark instead of guessing from colorScheme.
+                VFBrandLogo(size: 26, variant: .dark, cornerRadius: 6)
                 Text(AppBrand.name)
                     .font(.headline)
                 Spacer()

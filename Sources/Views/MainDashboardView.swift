@@ -672,7 +672,7 @@ struct MainDashboardView: View {
     @State private var customVocabulary: String = UserDefaults.standard.string(forKey: UserVocabulary.userDefaultsKey) ?? ""
 
     // Settings tab
-    @State private var provider: String = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.openai.rawValue
+    @State private var provider: String = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.groq.rawValue
 
     // Realtime streaming: off by default. When on, we pipe PCM16 @ 24 kHz
     // directly into OpenAI's Realtime API for lower perceived latency on
@@ -744,7 +744,7 @@ struct MainDashboardView: View {
     private var cloudPolishOptions: [(id: String, label: String)] {
         var opts: [(id: String, label: String)] = [
             (PolishBackend.defaultIdGroq,
-             "Groq · Llama 4 Scout (vision context)")
+             "Groq · GPT OSS 20B (fast cleanup)")
         ]
         if !openAIKey.isEmpty {
             opts.append(("openai::gpt-4.1-mini",
@@ -928,13 +928,17 @@ struct MainDashboardView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous)
                     .fill(isActive ? Theme.sidebarActiveFill : Color.clear)
             )
+            .contentShape(Rectangle())
             .foregroundColor(isActive ? Theme.textPrimary : Theme.textSecondary)
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .vfClickableCursor()
     }
 
@@ -2564,13 +2568,16 @@ struct MainDashboardView: View {
             }
             .foregroundColor(selectedSettingsPane == pane ? Theme.textPrimary : Theme.textSecondary)
             .padding(.horizontal, Theme.Space.md)
-            .frame(height: 38)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: Theme.RadiusExtra.input, style: .continuous)
                     .fill(selectedSettingsPane == pane ? Theme.sidebarActiveFill : Color.clear)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .vfClickableCursor()
         .padding(.horizontal, Theme.Space.sm)
     }
@@ -2787,7 +2794,7 @@ struct MainDashboardView: View {
                     VFDropdown(
                         options: [
                             (id: TranscriptionProvider.groq.rawValue, label: "Groq · Free"),
-                            (id: TranscriptionProvider.openai.rawValue, label: "OpenAI")
+                            (id: TranscriptionProvider.openai.rawValue, label: "OpenAI · 4o mini")
                         ],
                         selection: $provider,
                         width: 180
@@ -3793,8 +3800,8 @@ struct MainDashboardView: View {
 
                 ThemedPillTabs(
                     options: [
-                        (id: TranscriptionProvider.groq.rawValue,   label: "Groq · Free · Multilingual"),
-                        (id: TranscriptionProvider.openai.rawValue, label: "OpenAI · GPT-4 Polish")
+                        (id: TranscriptionProvider.groq.rawValue, label: "Groq · Free · Fast"),
+                        (id: TranscriptionProvider.openai.rawValue, label: "OpenAI · 4o mini transcribe")
                     ],
                     selection: $provider
                 )

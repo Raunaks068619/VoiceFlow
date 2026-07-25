@@ -64,6 +64,7 @@
 		A22EEB9DE9E17FEA09E47263 /* EmbeddingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DC552A4CCA5B49E151F47E /* EmbeddingService.swift */; };
 		A3DE090C2B7F0741C9EFD509 /* DeveloperModeProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60CA8FA4FD26162CEAD4B35D /* DeveloperModeProfile.swift */; };
 		A4F6C1D5AB7E0DC5E34DC038 /* HeaderGradientGlitter.svg in Resources */ = {isa = PBXBuildFile; fileRef = 35D94D4B1CF48CD5FFE508F8 /* HeaderGradientGlitter.svg */; };
+		A7F2419C8D304EF8B6A25101 /* PolishFormattingPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8E352AD9F4150C7D6B36212 /* PolishFormattingPolicy.swift */; };
 		AAFEB1C5EF069EC701EF49B3 /* NotchPillWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7245DCA746C4265AC50430AF /* NotchPillWindow.swift */; };
 		AB4E6FF5F16127F4C097D730 /* KnowledgeGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E85A5450D5E1380E9DA4B3E9 /* KnowledgeGraphView.swift */; };
 		ABC3DACAE9605322F1C0F98C /* vordi_transparent_background_colored_logo.png in Resources */ = {isa = PBXBuildFile; fileRef = 83B325BAEF88931E0E99F83C /* vordi_transparent_background_colored_logo.png */; };
@@ -145,6 +146,7 @@
 		AF911FC4438406925F1D9AB3 /* CLIRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIRunner.swift; sourceTree = "<group>"; };
 		B2817E7F6BBFC15CEF33B2B2 /* DevModeSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevModeSettingsView.swift; sourceTree = "<group>"; };
 		B33BF7E64BAAF219F092C06E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B8E352AD9F4150C7D6B36212 /* PolishFormattingPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolishFormattingPolicy.swift; sourceTree = "<group>"; };
 		B9F20AD1290941D8B706EB76 /* Vordi.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vordi.entitlements; sourceTree = "<group>"; };
 		C316FCB545F9ABA590803E34 /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStore.swift; sourceTree = "<group>"; };
 		C5109697B9B8ECCAD8D2BA7A /* LLMService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMService.swift; sourceTree = "<group>"; };
@@ -249,6 +251,7 @@
 				17C5B17EAA41C309AB9F4CA8 /* UserVocabulary.swift */,
 				19413ECD16A24328128E2EE5 /* VoiceNoteStore.swift */,
 				87966BCEB2D8E8154D5CAA5A /* WhisperService.swift */,
+				B8E352AD9F4150C7D6B36212 /* PolishFormattingPolicy.swift */,
 				58EE6304B3D3FF3AB4356FC2 /* Memory */,
 				D3559D905586709F60DA0F4B /* Profiles */,
 			);
@@ -505,6 +508,7 @@
 				41CECEFEA266BE6F949B6900 /* VoiceNote.swift in Sources */,
 				97F49CD6574D0894F43506BE /* VoiceNoteStore.swift in Sources */,
 				D499A668C340F1138155A93B /* WhisperService.swift in Sources */,
+				A7F2419C8D304EF8B6A25101 /* PolishFormattingPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -581,7 +585,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 28;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -639,7 +643,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 28;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;

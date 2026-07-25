@@ -635,7 +635,7 @@ final class NotchPillWindow: NSPanel {
         resetAudio: Bool = false,
         clearTranscript: Bool = false
     ) {
-        DispatchQueue.main.async { [weak self] in
+        let update = { [weak self] in
             self?.flashTimer?.invalidate()
             self?.model.state = state
             if resetAudio {
@@ -645,6 +645,11 @@ final class NotchPillWindow: NSPanel {
             if clearTranscript {
                 self?.model.liveTranscript = ""
             }
+        }
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
         }
     }
 

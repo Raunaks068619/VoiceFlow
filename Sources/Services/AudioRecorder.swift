@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AppKit
 
 class AudioRecorder: NSObject {
     private var audioEngine: AVAudioEngine?
@@ -9,6 +10,9 @@ class AudioRecorder: NSObject {
     /// is installed on the same bus, so tap ownership must be explicit rather
     /// than inferred from `isRecording`.
     private var inputTapInstalled = false
+    private var audioEngineNeedsRebuild = false
+    private var engineConfigurationObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
     /// Cancels the delayed 350 ms teardown when a capture is aborted or its
     /// lifecycle is superseded (for example Fn transitioning to Fn+Control).
     private var pendingStopWorkItem: DispatchWorkItem?
@@ -123,6 +127,29 @@ class AudioRecorder: NSObject {
     override init() {
         super.init()
         setupAudioEngine()
+        engineConfigurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.audioEngineNeedsRebuild = true
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.audioEngineNeedsRebuild = true
+        }
+    }
+
+    deinit {
+        if let engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(engineConfigurationObserver)
+        }
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
     }
 
     private func setupAudioEngine() {
@@ -137,14 +164,16 @@ class AudioRecorder: NSObject {
         inputTapInstalled = false
     }
 
-    /// A persistent AVAudioEngine can retain a stale input format after a mic
-    /// switch, Bluetooth profile change, or wake from sleep. Rebuilding it for
-    /// each new capture gives installTap a fresh node and current hardware
-    /// format, while also guaranteeing no prior tap can survive.
-    private func resetAudioEngineForNewCapture() {
+    /// Keep the engine warm between captures. Rebuild only when macOS reports
+    /// a hardware/configuration transition, wake from sleep, or a prior start
+    /// failure. This removes avoidable setup work from the Fn feedback path.
+    private func prepareAudioEngineForNewCapture() {
         removeInputTapIfNeeded()
         if audioEngine?.isRunning == true { audioEngine?.stop() }
-        setupAudioEngine()
+        if audioEngine == nil || audioEngineNeedsRebuild {
+            setupAudioEngine()
+            audioEngineNeedsRebuild = false
+        }
     }
 
     func startRecording(continuousHandsFree: Bool = false) -> Bool {
@@ -152,7 +181,7 @@ class AudioRecorder: NSObject {
 
         pendingStopWorkItem?.cancel()
         pendingStopWorkItem = nil
-        resetAudioEngineForNewCapture()
+        prepareAudioEngineForNewCapture()
         guard let audioEngine, let inputNode else { return false }
 
         rawAudioBuffer.removeAll()
@@ -179,6 +208,7 @@ class AudioRecorder: NSObject {
               format.sampleRate > 0,
               format.channelCount > 0 else {
             DebugLog.log("AudioRecorder: invalid input format; start skipped sr=\(format.sampleRate) channels=\(format.channelCount)")
+            audioEngineNeedsRebuild = true
             return false
         }
         // Derive the pause threshold in buffers from the live sample rate
@@ -272,6 +302,7 @@ class AudioRecorder: NSObject {
             return true
         } catch {
             removeInputTapIfNeeded()
+            audioEngineNeedsRebuild = true
             print("Failed to start audio engine: \(error)")
             DebugLog.log("AudioRecorder: engine START FAILED continuous=\(continuousHandsFree) error=\(error)")
             return false

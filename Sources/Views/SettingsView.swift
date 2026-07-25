@@ -8,7 +8,7 @@ struct SettingsView: View {
     @StateObject private var localDetector = LocalModelDetector.shared
     @State private var apiKey: String = ""
     @State private var groqApiKey: String = ""
-    @State private var provider: String = TranscriptionProvider.openai.rawValue
+    @State private var provider: String = TranscriptionProvider.groq.rawValue
     @State private var selectedLanguage: String = "hi"
     @State private var outputMode: String = TranscriptOutputStyle.cleanHinglish.rawValue
     @State private var processingMode: String = TranscriptProcessingMode.dictation.rawValue
@@ -24,9 +24,9 @@ struct SettingsView: View {
     /// hatch — it's cheaper and empirically less eager to answer questions
     /// than `gpt-4.1-mini`, at the cost of slightly worse Hinglish.
     private let cloudPolishOptions: [(id: String, label: String)] = [
-        ("openai::gpt-4.1-mini", "OpenAI · gpt-4.1-mini (default)"),
-        ("openai::gpt-4.1-nano", "OpenAI · gpt-4.1-nano (cheaper, stronger role adherence)"),
-        (PolishBackend.defaultIdGroq, "Groq · Llama 4 Scout (vision context)")
+        (PolishBackend.defaultIdGroq, "Groq · GPT OSS 20B (fast cleanup)"),
+        ("openai::gpt-4.1-mini", "OpenAI · gpt-4.1-mini"),
+        ("openai::gpt-4.1-nano", "OpenAI · gpt-4.1-nano")
     ]
 
     /// Computed dropdown options: cloud first, then discovered local models.
@@ -41,8 +41,8 @@ struct SettingsView: View {
     }
 
     let providers = [
-        (TranscriptionProvider.openai.rawValue, "OpenAI (Paid · GPT-4 Polish)"),
-        (TranscriptionProvider.groq.rawValue, "Groq (Free · Multilingual)")
+        (TranscriptionProvider.groq.rawValue, "Groq · Free and fast"),
+        (TranscriptionProvider.openai.rawValue, "OpenAI · gpt-4o-mini-transcribe")
     ]
     
     let languages = [
@@ -73,7 +73,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text("Both providers support multilingual transcription. Groq is free; OpenAI offers GPT-4 post-processing.")
+                Text("Groq works immediately. OpenAI is optional and requires your own API key.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -387,7 +387,7 @@ struct SettingsView: View {
     private func loadSettings() {
         apiKey = UserDefaults.standard.string(forKey: "openai_api_key") ?? ""
         groqApiKey = UserDefaults.standard.string(forKey: "groq_api_key") ?? ""
-        provider = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.openai.rawValue
+        provider = UserDefaults.standard.string(forKey: "transcription_provider") ?? TranscriptionProvider.groq.rawValue
         selectedLanguage = UserDefaults.standard.string(forKey: "language") ?? "hi"
         let storedOutputMode = UserDefaults.standard.string(forKey: "output_mode") ?? TranscriptOutputStyle.cleanHinglish.rawValue
         outputMode = storedOutputMode == TranscriptOutputStyle.clean.rawValue ? TranscriptOutputStyle.translateEnglish.rawValue : storedOutputMode

@@ -237,6 +237,31 @@ enum AppBrand {
         return image
     }
 
+    /// The actual Vordi mark, resampled into a native menu-bar canvas. Cropping
+    /// the transparent padding preserves the correct outside-tall waveform and
+    /// both lavender sparkle details without exposing the 500 px source image
+    /// as an oversized status-item label.
+    static let menuBarLogoImage: NSImage = {
+        let canvasSize = NSSize(width: 20, height: 18)
+        guard let source = logoImage else {
+            return NSImage(systemSymbolName: "waveform", accessibilityDescription: name) ?? NSImage()
+        }
+        let sourceBounds = NSRect(x: 50, y: 101, width: 400, height: 286)
+        let targetBounds = NSRect(x: 0, y: 1.85, width: 20, height: 14.3)
+        let image = NSImage(size: canvasSize, flipped: false) { _ in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            source.draw(
+                in: targetBounds,
+                from: sourceBounds,
+                operation: .sourceOver,
+                fraction: 1
+            )
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }()
+
     private static func image(named name: String) -> NSImage? {
         NSImage(named: NSImage.Name(name))
             ?? Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
@@ -299,30 +324,11 @@ struct VFBrandLogo: View {
 }
 
 struct VFMenuBarBrandIcon: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    // The brand glyph is the 5-bar waveform mark. We draw it directly as a
-    // monochrome template at menu-bar scale instead of templating the square
-    // app-icon PNG — that asset's opaque square fills solid white when used as
-    // a template, producing an oversized white block in the menu bar.
-    private static let barHeights: [CGFloat] = [7, 13, 17, 12, 7]
-
-    private var menuBarColor: Color {
-        colorScheme == .dark
-            ? Color(nsColor: .white).opacity(0.96)
-            : Color(nsColor: .black).opacity(0.86)
-    }
-
     var body: some View {
-        HStack(alignment: .center, spacing: 1.8) {
-            ForEach(Self.barHeights.indices, id: \.self) { index in
-                Capsule()
-                    .frame(width: 2.6, height: Self.barHeights[index])
-            }
-        }
-        .frame(width: 22, height: 20, alignment: .center)
-        .foregroundStyle(menuBarColor)
-        .shadow(color: Color(nsColor: .black).opacity(colorScheme == .dark ? 0.28 : 0), radius: 0.5, x: 0, y: 0)
+        Image(nsImage: AppBrand.menuBarLogoImage)
+            .renderingMode(.original)
+            .frame(width: 20, height: 18, alignment: .center)
+            .shadow(color: Color(nsColor: .black).opacity(0.42), radius: 0.7)
         .accessibilityLabel(AppBrand.name)
     }
 }

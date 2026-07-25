@@ -266,7 +266,7 @@ final class FloatingChipWindow: NSPanel, FeedbackSurface {
     func setLiveTranscript(_ text: String) {}
 
     private func setState(_ state: FloatingChipModel.ChipState, resetAudio: Bool = false) {
-        DispatchQueue.main.async { [weak self] in
+        let update = { [weak self] in
             self?.flashTimer?.invalidate()
             withAnimation(.easeInOut(duration: 0.15)) {
                 self?.model.state = state
@@ -274,6 +274,11 @@ final class FloatingChipWindow: NSPanel, FeedbackSurface {
                     self?.model.audioLevel = 0
                 }
             }
+        }
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
         }
     }
 
