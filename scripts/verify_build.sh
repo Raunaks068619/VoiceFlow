@@ -44,7 +44,7 @@ report() {
   fi
 }
 
-echo "⧞РVerifying: $APP"
+echo "🔍 Verifying: $APP"
 echo ""
 
 # 1. Bundle ID
@@ -64,14 +64,15 @@ for key in NSMicrophoneUsageDescription; do
   fi
 done
 
-# 3+4. Code signature + hardened runtime (capture once to avoid SIGPIPE under pipefail)
-CS_OUTPUT="$(codesign -dv "$APP" 2>&1 || true)"
+# 3+4. Code signature + hardened runtime. Modern codesign output does not
+# consistently include a Signature= line, so verify the signature directly.
+CS_OUTPUT="$(codesign -dv --verbose=4 "$APP" 2>&1 || true)"
 
-if echo "$CS_OUTPUT" | grep -q 'Signature='; then
-  SIG_TYPE="$(echo "$CS_OUTPUT" | grep 'Signature=' | sed 's/.*Signature=//')"
-  report ok "Code signature: $SIG_TYPE"
+if codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+  SIGNING_AUTHORITY="$(echo "$CS_OUTPUT" | sed -n 's/^Authority=//p' | head -1)"
+  report ok "Code signature: ${SIGNING_AUTHORITY:-valid}"
 else
-  report fail "No code signature"
+  report fail "Invalid or missing code signature"
 fi
 
 FLAGS="$(echo "$CS_OUTPUT" | grep -E '^CodeDirectory' | grep -oE 'flags=0x[0-9a-f]+\([^)]*\)' || true)"
@@ -93,7 +94,7 @@ done
 
 # 6. TCC state (informational)
 echo ""
-echo "✕  Consider tccutil reset if iterating:"
+echo "ℹ️  Consider tccutil reset if iterating:"
 echo "    tccutil reset Microphone $EXPECTED_BUNDLE_ID"
 
 echo ""

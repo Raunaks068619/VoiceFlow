@@ -242,7 +242,7 @@ homebrew-vordi     local checkout of the Homebrew tap
 
 ## Release
 
-The latest release is [v0.7.1](https://github.com/Raunaks068619/Vordi/releases/tag/v0.7.1).
+The latest release is [v0.7.2](https://github.com/Raunaks068619/Vordi/releases/tag/v0.7.2).
 
 ```text
 DMG:    Vordi-Beta.dmg
